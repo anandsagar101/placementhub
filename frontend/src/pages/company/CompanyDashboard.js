@@ -3,6 +3,7 @@ import useSWR from "swr";
 import { Link } from "react-router-dom";
 import {
   Briefcase, Users, CheckCircle2, UserCheck, PlusCircle, ArrowRight, Loader2, ShieldAlert,
+  CalendarClock, Rocket, ClipboardCheck,
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -49,6 +50,12 @@ export default function CompanyDashboard() {
         <StatCard icon={Users} label="Applicants" value={stats?.total_applications ?? "—"} accent="violet" testid="stat-total-applicants" />
         <StatCard icon={UserCheck} label="Shortlisted" value={stats?.shortlisted ?? "—"} accent="warning" testid="stat-shortlisted" />
         <StatCard icon={CheckCircle2} label="Hired" value={stats?.hired ?? "—"} accent="success" testid="stat-hired" />
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-3">
+        <Link to="/app/interviews" className="block"><StatCard icon={CalendarClock} label="Today's Interviews" value={stats?.todays_interviews ?? "—"} accent="primary" testid="stat-todays-interviews" /></Link>
+        <Link to="/app/drives" className="block"><StatCard icon={Rocket} label="Upcoming Drives" value={stats?.upcoming_drives ?? "—"} accent="violet" testid="stat-recruiter-drives" /></Link>
+        <Link to="/app/interviews" className="block"><StatCard icon={ClipboardCheck} label="Pending Feedback" value={stats?.pending_feedback ?? "—"} accent="warning" testid="stat-pending-feedback" /></Link>
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-3">

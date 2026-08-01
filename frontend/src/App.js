@@ -10,6 +10,10 @@ import Landing from "@/pages/Landing";
 import Auth from "@/pages/Auth";
 import Profile from "@/pages/Profile";
 import ManageJobs from "@/pages/ManageJobs";
+import Drives from "@/pages/Drives";
+import Interviews from "@/pages/Interviews";
+import Calendar from "@/pages/Calendar";
+import ForgotPassword from "@/pages/ForgotPassword";
 
 import StudentDashboard from "@/pages/student/StudentDashboard";
 import BrowseJobs from "@/pages/student/BrowseJobs";
@@ -63,10 +67,14 @@ function AppRoutes() {
       <Route path="/" element={<Landing />} />
       <Route path="/login" element={<GuestOnly><Auth mode="login" /></GuestOnly>} />
       <Route path="/register" element={<GuestOnly><Auth mode="register" /></GuestOnly>} />
+      <Route path="/forgot-password" element={<GuestOnly><ForgotPassword /></GuestOnly>} />
 
       <Route path="/app" element={<Protected><DashboardLayout><Outlet /></DashboardLayout></Protected>}>
         <Route index element={<RoleRoute map={{ student: StudentDashboard, company: CompanyDashboard, admin: AdminDashboard }} />} />
         <Route path="jobs" element={<RoleRoute map={{ student: BrowseJobs, company: ManageJobs, admin: ManageJobs }} />} />
+        <Route path="drives" element={<RoleRoute map={{ student: Drives, company: Drives, admin: Drives }} />} />
+        <Route path="interviews" element={<RoleRoute map={{ student: Interviews, company: Interviews, admin: Interviews }} />} />
+        <Route path="calendar" element={<RoleRoute map={{ student: Calendar, company: Calendar, admin: Calendar }} />} />
         <Route path="ai" element={<RoleRoute map={{ student: AiInsights }} />} />
         <Route path="applications" element={<RoleRoute map={{ student: MyApplications }} />} />
         <Route path="offers" element={<RoleRoute map={{ student: Offers }} />} />

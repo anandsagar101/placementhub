@@ -3,7 +3,7 @@ import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import {
   GraduationCap, LayoutDashboard, Briefcase, FileText, User, Building2,
   PlusCircle, Users, ClipboardList, Moon, Sun, LogOut, Menu, Sparkles,
-  Award, FolderOpen, ScrollText, ShieldCheck,
+  Award, FolderOpen, ScrollText, ShieldCheck, Rocket, CalendarClock, CalendarDays,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
@@ -18,6 +18,9 @@ const NAV = {
   student: [
     { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true },
     { to: "/app/jobs", label: "Browse Jobs", icon: Briefcase },
+    { to: "/app/drives", label: "Campus Drives", icon: Rocket },
+    { to: "/app/interviews", label: "Interviews", icon: CalendarClock },
+    { to: "/app/calendar", label: "Calendar", icon: CalendarDays },
     { to: "/app/ai", label: "AI Insights", icon: Sparkles },
     { to: "/app/applications", label: "My Applications", icon: FileText },
     { to: "/app/offers", label: "Offers", icon: Award },
@@ -28,14 +31,20 @@ const NAV = {
     { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true },
     { to: "/app/jobs", label: "My Jobs", icon: Briefcase },
     { to: "/app/post-job", label: "Post a Job", icon: PlusCircle },
+    { to: "/app/drives", label: "Campus Drives", icon: Rocket },
+    { to: "/app/interviews", label: "Interviews", icon: CalendarClock },
     { to: "/app/applicants", label: "Applicants", icon: ClipboardList },
+    { to: "/app/calendar", label: "Calendar", icon: CalendarDays },
     { to: "/app/profile", label: "Company Profile", icon: Building2 },
   ],
   admin: [
     { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true },
     { to: "/app/jobs", label: "All Jobs", icon: Briefcase },
+    { to: "/app/drives", label: "Campus Drives", icon: Rocket },
+    { to: "/app/interviews", label: "Interviews", icon: CalendarClock },
     { to: "/app/students", label: "Students", icon: GraduationCap },
     { to: "/app/companies", label: "Companies", icon: Building2 },
+    { to: "/app/calendar", label: "Calendar", icon: CalendarDays },
     { to: "/app/audit", label: "Audit Logs", icon: ScrollText, perm: "view_audit" },
     { to: "/app/staff", label: "Staff & Roles", icon: ShieldCheck, superOnly: true },
   ],

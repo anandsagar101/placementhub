@@ -3,7 +3,7 @@ import useSWR from "swr";
 import { Link } from "react-router-dom";
 import {
   FileText, Briefcase, CheckCircle2, Trophy, Loader2, ArrowRight, Award,
-  ShieldCheck, ShieldAlert, Snowflake, Clock, XCircle,
+  ShieldCheck, ShieldAlert, Snowflake, Clock, XCircle, CalendarClock, Rocket, FolderOpen,
 } from "lucide-react";
 import {
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend,
@@ -94,6 +94,12 @@ export default function StudentDashboard() {
         <StatCard icon={CheckCircle2} label="Shortlisted" value={stats?.shortlisted ?? "—"} accent="violet" testid="stat-shortlisted" />
         <StatCard icon={Award} label="Offers" value={stats?.offers ?? "—"} accent="success" testid="stat-offers" />
         <StatCard icon={Briefcase} label="Open Jobs" value={stats?.open_jobs ?? "—"} accent="warning" testid="stat-open-jobs" />
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-3">
+        <Link to="/app/interviews" className="block"><StatCard icon={CalendarClock} label="Upcoming Interviews" value={stats?.upcoming_interviews ?? "—"} accent="primary" testid="stat-upcoming-interviews" /></Link>
+        <Link to="/app/drives" className="block"><StatCard icon={Rocket} label="Open Drives" value={stats?.upcoming_drives ?? "—"} accent="violet" testid="stat-upcoming-drives" /></Link>
+        <Link to="/app/documents" className="block"><StatCard icon={FolderOpen} label="Pending Documents" value={stats?.pending_documents ?? "—"} accent="warning" testid="stat-pending-docs" /></Link>
       </div>
 
       {/* Placement journey timeline */}

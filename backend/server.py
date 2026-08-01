@@ -16,6 +16,8 @@ import uuid
 import logging
 import json
 import time
+import re
+import secrets
 import jwt
 import bcrypt
 import cloudinary
@@ -840,12 +842,18 @@ async def student_stats(user: dict = Depends(require_roles("student"))):
         counts[a["status"]] = counts.get(a["status"], 0) + 1
     active_jobs = await db.jobs.count_documents({"status": "active"})
     offers = await db.offers.count_documents({"student_id": user["id"]})
+    upcoming_interviews = await db.interviews.count_documents({"student_id": user["id"], "status": {"$in": ["scheduled", "rescheduled"]}})
+    open_drives = await db.drives.count_documents({"moderation": "approved", "status": "registration_open"})
+    pending_docs = sum(1 for d in (full.get("documents") or {}).values() if d.get("status") == "pending")
     return {
         "total_applications": len(apps),
         "shortlisted": counts["shortlisted"] + counts["interview"],
         "selected": counts["selected"],
         "open_jobs": active_jobs,
         "offers": offers,
+        "upcoming_interviews": upcoming_interviews,
+        "upcoming_drives": open_drives,
+        "pending_documents": pending_docs,
         "verification_status": full.get("verification_status"),
         "frozen": full.get("frozen", False),
         "freeze_reason": full.get("freeze_reason"),
@@ -867,9 +875,17 @@ async def company_stats(user: dict = Depends(require_roles("company"))):
     for s in APPLICATION_STATUSES:
         dist[s] = await db.applications.count_documents({"company_id": user["id"], "status": s})
     full = await db.users.find_one({"id": user["id"]})
+    today = now_utc().date().isoformat()
+    todays_interviews = await db.interviews.count_documents({"company_id": user["id"], "date": today})
+    upcoming_drives = await db.drives.count_documents({"company_id": user["id"], "status": {"$in": ["registration_open", "upcoming", "ongoing"]}})
+    completed_iv = await db.interviews.find({"company_id": user["id"], "status": "completed"}).to_list(1000)
+    fb_ids = {f["interview_id"] for f in await db.interview_feedback.find({"company_id": user["id"]}).to_list(1000)}
+    pending_feedback = await db.interviews.count_documents({"company_id": user["id"], "status": {"$in": ["completed"]}, "id": {"$nin": list(fb_ids)}})
     return {
         "total_jobs": total_jobs, "active_jobs": active_jobs, "total_applications": total_apps,
         "hired": hired, "shortlisted": shortlisted,
+        "todays_interviews": todays_interviews, "upcoming_drives": upcoming_drives,
+        "pending_feedback": max(pending_feedback, 0),
         "approval_status": full.get("approval_status", "approved"),
         "status_distribution": [{"status": k, "count": v} for k, v in dist.items()],
     }
@@ -1137,6 +1153,9 @@ async def admin_stats(admin: dict = Depends(require_perm("view_dashboard"))):
         "placed": placed, "placement_rate": placement_rate,
         "awaiting_verification": awaiting_verification, "awaiting_recruiter_approval": awaiting_recruiter,
         "pending_documents": pending_docs, "highest_package": highest_package, "avg_package": avg_package,
+        "active_drives": await db.drives.count_documents({"moderation": "approved", "status": {"$nin": ["completed", "cancelled"]}}),
+        "pending_interviews": await db.interviews.count_documents({"status": {"$in": ["scheduled", "rescheduled"]}}),
+        "todays_events": await db.events.count_documents({"date": now_utc().date().isoformat()}),
         "status_distribution": status_dist, "top_companies": top_companies, "trend": trend,
         "dept_wise": [{"name": k, **v} for k, v in dept_map.items()],
         "branch_wise": [{"name": k, **v} for k, v in branch_map.items()],
@@ -1228,7 +1247,608 @@ async def ai_recommendations(user: dict = Depends(require_roles("student"))):
     return {"recommendations": out}
 
 
-# ------------------------------------------------------------------ AI chat assistant (Claude Sonnet 5)
+# ------------------------------------------------------------------ Password Reset (OTP) + EmailService abstraction
+class EmailService:
+    async def send(self, to: str, subject: str, body: str):
+        raise NotImplementedError
+
+
+class NotificationEmailService(EmailService):
+    """Abstract email provider. Currently logs; swap with SendGrid/Resend later."""
+    async def send(self, to: str, subject: str, body: str):
+        logger.info(f"[EMAIL -> {to}] {subject} | {body}")
+
+
+email_service = NotificationEmailService()
+
+
+async def security_log(event: str, email: Optional[str] = None, ip: Optional[str] = None, detail: Optional[str] = None):
+    await db.security_logs.insert_one({
+        "id": str(uuid.uuid4()), "event": event, "email": email, "ip": ip,
+        "detail": detail, "created_at": now_iso()})
+
+
+def validate_password_strength(pw: str) -> Optional[str]:
+    if len(pw) < 8:
+        return "Password must be at least 8 characters."
+    if not re.search(r"[A-Z]", pw):
+        return "Password must contain an uppercase letter."
+    if not re.search(r"[a-z]", pw):
+        return "Password must contain a lowercase letter."
+    if not re.search(r"\d", pw):
+        return "Password must contain a number."
+    if not re.search(r"[^A-Za-z0-9]", pw):
+        return "Password must contain a special character."
+    return None
+
+
+class ForgotPasswordInput(BaseModel):
+    email: EmailStr
+
+
+class VerifyOtpInput(BaseModel):
+    email: EmailStr
+    otp: str
+
+
+class ResetPasswordInput(BaseModel):
+    reset_token: str
+    new_password: str
+    confirm_password: str
+
+
+@api.post("/auth/forgot-password")
+async def forgot_password(body: ForgotPasswordInput, request: Request):
+    email = body.email.lower().strip()
+    ip = request.client.host if request.client else None
+    # rate limit: max 3 requests / 15 min per email
+    window = (now_utc() - timedelta(minutes=15)).isoformat()
+    recent = await db.password_reset_otps.count_documents({"email": email, "created_at": {"$gte": window}})
+    if recent >= 3:
+        await security_log("otp_rate_limited", email, ip)
+        raise HTTPException(status_code=429, detail="Too many reset requests. Please try again in a few minutes.")
+
+    user = await db.users.find_one({"email": email})
+    resp = {"message": "If an account exists for this email, an OTP has been sent."}
+    if not user:
+        await security_log("otp_request_unknown_email", email, ip)
+        return resp
+
+    # invalidate previous tokens
+    await db.password_reset_otps.update_many({"email": email, "used": False}, {"$set": {"used": True}})
+    otp = f"{secrets.randbelow(1000000):06d}"
+    await db.password_reset_otps.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user["id"], "email": email,
+        "otp_hash": hash_password(otp), "expires_at": (now_utc() + timedelta(minutes=10)).isoformat(),
+        "attempts": 0, "used": False, "created_at": now_iso()})
+    await email_service.send(email, "Your PlacementHub password reset OTP",
+                             f"Your OTP is {otp}. It expires in 10 minutes.")
+    await notify(user["id"], "security", "Password reset requested",
+                 "A password reset OTP was generated for your account. If this wasn't you, ignore this message.")
+    await security_log("otp_generated", email, ip)
+    # dev delivery (no email provider configured yet)
+    resp["dev_otp"] = otp
+    return resp
+
+
+@api.post("/auth/verify-otp")
+async def verify_otp(body: VerifyOtpInput, request: Request):
+    email = body.email.lower().strip()
+    ip = request.client.host if request.client else None
+    rec = await db.password_reset_otps.find_one({"email": email, "used": False}, sort=[("created_at", -1)])
+    if not rec:
+        raise HTTPException(status_code=400, detail="No active OTP. Please request a new one.")
+    if now_utc() > datetime.fromisoformat(rec["expires_at"]):
+        raise HTTPException(status_code=400, detail="OTP expired. Please request a new one.")
+    if rec["attempts"] >= 5:
+        await db.password_reset_otps.update_one({"id": rec["id"]}, {"$set": {"used": True}})
+        await security_log("otp_max_attempts", email, ip)
+        raise HTTPException(status_code=429, detail="Too many incorrect attempts. Please request a new OTP.")
+    if not verify_password(body.otp, rec["otp_hash"]):
+        await db.password_reset_otps.update_one({"id": rec["id"]}, {"$inc": {"attempts": 1}})
+        await security_log("otp_wrong", email, ip)
+        raise HTTPException(status_code=400, detail=f"Incorrect OTP. {4 - rec['attempts']} attempts left.")
+    # success -> issue short-lived reset token bound to this otp record
+    token = jwt.encode({"sub": rec["user_id"], "otp_id": rec["id"], "type": "reset",
+                        "exp": now_utc() + timedelta(minutes=10)}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    await security_log("otp_verified", email, ip)
+    return {"reset_token": token}
+
+
+@api.post("/auth/reset-password")
+async def reset_password(body: ResetPasswordInput, request: Request):
+    ip = request.client.host if request.client else None
+    if body.new_password != body.confirm_password:
+        raise HTTPException(status_code=400, detail="Passwords do not match.")
+    err = validate_password_strength(body.new_password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    try:
+        payload = jwt.decode(body.reset_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("type") != "reset":
+            raise HTTPException(status_code=400, detail="Invalid reset token.")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=400, detail="Reset session expired. Start again.")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=400, detail="Invalid reset token.")
+    rec = await db.password_reset_otps.find_one({"id": payload.get("otp_id")})
+    if not rec or rec.get("used"):
+        raise HTTPException(status_code=400, detail="This reset link has already been used.")
+    await db.users.update_one({"id": payload["sub"]}, {"$set": {"password_hash": hash_password(body.new_password)}})
+    await db.password_reset_otps.update_one({"id": rec["id"]}, {"$set": {"used": True}})
+    await db.password_reset_otps.update_many({"email": rec["email"], "used": False}, {"$set": {"used": True}})
+    await notify(payload["sub"], "security", "Password changed", "Your password was reset successfully.")
+    await security_log("password_reset", rec["email"], ip)
+    return {"message": "Password reset successful. You can now log in."}
+
+
+# ------------------------------------------------------------------ Campus Drives
+DRIVE_TYPES = ["Internship", "Full-Time", "PPO", "Hackathon", "Walk-In"]
+DRIVE_STATUSES = ["upcoming", "registration_open", "registration_closed", "ongoing", "completed", "cancelled"]
+PIPELINE_STAGES = ["registered", "eligible", "shortlisted", "round_1", "round_2", "hr", "offer", "accepted", "placed"]
+
+
+class DriveInput(BaseModel):
+    title: str
+    role: str
+    package_min: Optional[float] = None
+    package_max: Optional[float] = None
+    location: str = "Remote"
+    description: str = ""
+    drive_type: str = "Full-Time"
+    eligibility_cgpa: Optional[float] = None
+    max_backlogs: Optional[int] = None
+    branches: List[str] = []
+    departments: List[str] = []
+    passing_year: Optional[int] = None
+    gender: Optional[str] = "Any"
+    degree: Optional[str] = None
+    registration_deadline: Optional[str] = None
+    drive_date: Optional[str] = None
+    max_applicants: Optional[int] = None
+    rounds: List[str] = ["Aptitude", "Technical", "HR"]
+    status: str = "registration_open"
+
+
+async def enrich_drive(d: dict) -> dict:
+    d = dict(d)
+    d.pop("_id", None)
+    company = await db.users.find_one({"id": d.get("company_id")})
+    if company:
+        d["company_name"] = company.get("company_name") or company.get("name")
+    d["registrations_count"] = await db.drive_registrations.count_documents({"drive_id": d["id"], "withdrawn": False})
+    return d
+
+
+@api.post("/drives")
+async def create_drive(body: DriveInput, user: dict = Depends(require_roles("company", "admin"))):
+    if user["role"] == "company":
+        full = await db.users.find_one({"id": user["id"]})
+        if full.get("approval_status") != "approved":
+            raise HTTPException(status_code=403, detail="Your recruiter account is pending approval.")
+    doc = body.model_dump()
+    doc.update({"id": str(uuid.uuid4()), "company_id": user["id"],
+                "moderation": "approved" if user["role"] == "admin" else "pending",
+                "created_at": now_iso()})
+    await db.drives.insert_one(doc)
+    await notify_admins("drive", "New campus drive submitted",
+                        f"{body.title} needs review.", "/app/drives")
+    return await enrich_drive(doc)
+
+
+@api.get("/drives")
+async def list_drives(request: Request, mine: bool = False, drive_type: Optional[str] = None):
+    user = None
+    try:
+        user = await get_current_user(request)
+    except HTTPException:
+        pass
+    q = {}
+    if mine and user and user["role"] == "company":
+        q["company_id"] = user["id"]
+    elif user and user["role"] == "admin":
+        pass
+    else:
+        q["moderation"] = "approved"
+        q["status"] = {"$nin": ["cancelled"]}
+    if drive_type and drive_type != "all":
+        q["drive_type"] = drive_type
+    drives = await db.drives.find(q).sort("created_at", -1).to_list(500)
+    out = [await enrich_drive(d) for d in drives]
+    if user and user["role"] == "student":
+        regs = await db.drive_registrations.find({"student_id": user["id"], "withdrawn": False}).to_list(500)
+        reg_ids = {r["drive_id"] for r in regs}
+        for d in out:
+            d["registered"] = d["id"] in reg_ids
+    return out
+
+
+@api.get("/drives/{drive_id}")
+async def get_drive(drive_id: str):
+    d = await db.drives.find_one({"id": drive_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Drive not found")
+    return await enrich_drive(d)
+
+
+@api.patch("/drives/{drive_id}/moderation")
+async def moderate_drive(drive_id: str, body: StatusUpdate, admin: dict = Depends(require_perm("moderate_jobs"))):
+    if body.status not in {"approved", "rejected", "archived"}:
+        raise HTTPException(status_code=400, detail="Invalid moderation status")
+    d = await db.drives.find_one({"id": drive_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Drive not found")
+    await db.drives.update_one({"id": drive_id}, {"$set": {"moderation": body.status}})
+    await notify(d["company_id"], "drive", f"Drive {body.status}", f"Your drive '{d['title']}' was {body.status}.", "/app/drives")
+    await audit(admin, f"drive_{body.status}", d["company_id"], d["title"])
+    return {"message": "updated"}
+
+
+@api.patch("/drives/{drive_id}/status")
+async def set_drive_status(drive_id: str, body: StatusUpdate, user: dict = Depends(require_roles("company", "admin"))):
+    d = await db.drives.find_one({"id": drive_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Drive not found")
+    if user["role"] != "admin" and d["company_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your drive.")
+    if body.status not in DRIVE_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    await db.drives.update_one({"id": drive_id}, {"$set": {"status": body.status}})
+    return {"message": "updated"}
+
+
+@api.post("/drives/{drive_id}/register")
+async def register_drive(drive_id: str, user: dict = Depends(require_roles("student"))):
+    d = await db.drives.find_one({"id": drive_id})
+    if not d or d.get("moderation") != "approved":
+        raise HTTPException(status_code=404, detail="Drive not available")
+    if d.get("status") not in {"registration_open", "upcoming"}:
+        raise HTTPException(status_code=400, detail="Registrations are closed for this drive.")
+    full = await db.users.find_one({"id": user["id"]})
+    if full.get("verification_status") != "approved":
+        raise HTTPException(status_code=403, detail="Your profile must be verified to register.")
+    if full.get("frozen") and full.get("freeze_reason") != "Already Placed":
+        raise HTTPException(status_code=403, detail=f"Account frozen ({full.get('freeze_reason')}).")
+    elig = eligibility_check(full, d)
+    if not elig["eligible"]:
+        raise HTTPException(status_code=403, detail="Not eligible: " + "; ".join(elig["reasons"]))
+    if d.get("registration_deadline"):
+        try:
+            if now_utc() > datetime.fromisoformat(d["registration_deadline"]):
+                raise HTTPException(status_code=400, detail="Registration deadline has passed.")
+        except (ValueError, TypeError):
+            pass
+    if d.get("max_applicants"):
+        cnt = await db.drive_registrations.count_documents({"drive_id": drive_id, "withdrawn": False})
+        if cnt >= d["max_applicants"]:
+            raise HTTPException(status_code=400, detail="This drive is full.")
+    if await db.drive_registrations.find_one({"drive_id": drive_id, "student_id": user["id"], "withdrawn": False}):
+        raise HTTPException(status_code=400, detail="Already registered for this drive.")
+    ts = now_iso()
+    reg = {"id": str(uuid.uuid4()), "drive_id": drive_id, "company_id": d["company_id"],
+           "student_id": user["id"], "stage": "registered", "withdrawn": False, "created_at": ts,
+           "timeline": [{"stage": "registered", "at": ts}]}
+    await db.drive_registrations.insert_one(reg)
+    await notify(d["company_id"], "drive", "New drive registration", f"{full['name']} registered for {d['title']}.", "/app/drives")
+    reg.pop("_id", None)
+    return reg
+
+
+@api.delete("/drives/{drive_id}/register")
+async def withdraw_drive(drive_id: str, user: dict = Depends(require_roles("student"))):
+    r = await db.drive_registrations.find_one({"drive_id": drive_id, "student_id": user["id"], "withdrawn": False})
+    if not r:
+        raise HTTPException(status_code=404, detail="Not registered")
+    await db.drive_registrations.update_one({"id": r["id"]}, {"$set": {"withdrawn": True}})
+    return {"message": "withdrawn"}
+
+
+@api.get("/drives/me/registered")
+async def my_drives(user: dict = Depends(require_roles("student"))):
+    regs = await db.drive_registrations.find({"student_id": user["id"], "withdrawn": False}).sort("created_at", -1).to_list(200)
+    out = []
+    for r in regs:
+        r.pop("_id", None)
+        d = await db.drives.find_one({"id": r["drive_id"]})
+        if d:
+            r["drive"] = await enrich_drive(d)
+        out.append(r)
+    return out
+
+
+@api.get("/drives/{drive_id}/registrations")
+async def drive_registrations(drive_id: str, user: dict = Depends(require_roles("company", "admin"))):
+    d = await db.drives.find_one({"id": drive_id})
+    if not d:
+        raise HTTPException(status_code=404, detail="Drive not found")
+    if user["role"] != "admin" and d["company_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your drive.")
+    regs = await db.drive_registrations.find({"drive_id": drive_id, "withdrawn": False}).to_list(1000)
+    out = []
+    for r in regs:
+        r.pop("_id", None)
+        s = await db.users.find_one({"id": r["student_id"]})
+        if s:
+            r["student"] = public_user(s)
+        out.append(r)
+    return out
+
+
+@api.patch("/registrations/{reg_id}/stage")
+async def advance_stage(reg_id: str, body: StatusUpdate, user: dict = Depends(require_roles("company", "admin"))):
+    if body.status not in PIPELINE_STAGES:
+        raise HTTPException(status_code=400, detail="Invalid stage")
+    r = await db.drive_registrations.find_one({"id": reg_id})
+    if not r:
+        raise HTTPException(status_code=404, detail="Registration not found")
+    if user["role"] != "admin" and r["company_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your candidate.")
+    await db.drive_registrations.update_one(
+        {"id": reg_id}, {"$set": {"stage": body.status},
+                         "$push": {"timeline": {"stage": body.status, "at": now_iso()}}})
+    d = await db.drives.find_one({"id": r["drive_id"]})
+    await notify(r["student_id"], "drive", "Drive progress update",
+                 f"You advanced to '{body.status.replace('_', ' ')}' in {d['title'] if d else 'a drive'}.", "/app/drives")
+    if body.status == "placed":
+        s = await db.users.find_one({"id": r["student_id"]})
+        if s and not s.get("placed"):
+            await db.users.update_one({"id": r["student_id"]}, {"$set": {
+                "placed": True, "placed_company": (d or {}).get("company_name"),
+                "placed_package": (d or {}).get("package_max"), "frozen": True, "freeze_reason": "Already Placed"}})
+    return {"message": "updated"}
+
+
+# ------------------------------------------------------------------ Interviews
+INTERVIEW_MODES = ["Online", "Offline", "Phone"]
+ROUND_TYPES = ["Group Discussion", "Technical Round", "HR Round", "Managerial Round"]
+INTERVIEW_STATUSES = ["scheduled", "rescheduled", "cancelled", "completed", "no_show"]
+
+
+class InterviewInput(BaseModel):
+    student_id: str
+    drive_id: Optional[str] = None
+    round_type: str = "Technical Round"
+    round_number: int = 1
+    mode: str = "Online"
+    date: str
+    time: str
+    duration: str = "30 mins"
+    venue: Optional[str] = None
+    meeting_link: Optional[str] = None
+    instructions: Optional[str] = None
+    interviewer_name: Optional[str] = None
+
+
+class InterviewUpdate(BaseModel):
+    status: Optional[str] = None
+    date: Optional[str] = None
+    time: Optional[str] = None
+    mode: Optional[str] = None
+    venue: Optional[str] = None
+    meeting_link: Optional[str] = None
+    instructions: Optional[str] = None
+
+
+class InterviewResponse(BaseModel):
+    response: str  # accepted / reschedule_requested
+
+
+class FeedbackInput(BaseModel):
+    communication: int
+    technical_skills: int
+    problem_solving: int
+    confidence: int
+    overall_rating: int
+    recommendation: str
+    comments: Optional[str] = None
+    status: str  # pass / fail / hold
+
+
+async def enrich_interview(iv: dict, include_student=False) -> dict:
+    iv = dict(iv)
+    iv.pop("_id", None)
+    company = await db.users.find_one({"id": iv.get("company_id")})
+    if company:
+        iv["company_name"] = company.get("company_name") or company.get("name")
+    if iv.get("drive_id"):
+        d = await db.drives.find_one({"id": iv["drive_id"]})
+        iv["drive_title"] = d.get("title") if d else None
+    if include_student:
+        s = await db.users.find_one({"id": iv["student_id"]})
+        if s:
+            iv["student"] = public_user(s)
+    iv["feedback"] = None
+    fb = await db.interview_feedback.find_one({"interview_id": iv["id"]})
+    if fb:
+        fb.pop("_id", None)
+        iv["feedback"] = fb
+    return iv
+
+
+@api.post("/interviews")
+async def create_interview(body: InterviewInput, user: dict = Depends(require_roles("company", "admin"))):
+    student = await db.users.find_one({"id": body.student_id, "role": "student"})
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    doc = body.model_dump()
+    doc.update({"id": str(uuid.uuid4()), "company_id": user["id"], "status": "scheduled",
+                "student_response": "pending", "created_at": now_iso()})
+    await db.interviews.insert_one(doc)
+    await notify(body.student_id, "interview", "Interview scheduled",
+                 f"{body.round_type} on {body.date} at {body.time} ({body.mode}).", "/app/interviews")
+    return await enrich_interview(doc, include_student=True)
+
+
+@api.get("/interviews/me")
+async def my_interviews(user: dict = Depends(require_roles("student"))):
+    ivs = await db.interviews.find({"student_id": user["id"]}).sort("date", 1).to_list(500)
+    return [await enrich_interview(i) for i in ivs]
+
+
+@api.get("/interviews/company")
+async def company_interviews(user: dict = Depends(require_roles("company", "admin"))):
+    q = {} if user["role"] == "admin" else {"company_id": user["id"]}
+    ivs = await db.interviews.find(q).sort("date", 1).to_list(1000)
+    return [await enrich_interview(i, include_student=True) for i in ivs]
+
+
+@api.patch("/interviews/{iv_id}/respond")
+async def respond_interview(iv_id: str, body: InterviewResponse, user: dict = Depends(require_roles("student"))):
+    iv = await db.interviews.find_one({"id": iv_id, "student_id": user["id"]})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    if body.response not in {"accepted", "reschedule_requested"}:
+        raise HTTPException(status_code=400, detail="Invalid response")
+    await db.interviews.update_one({"id": iv_id}, {"$set": {"student_response": body.response}})
+    await notify(iv["company_id"], "interview", "Interview response",
+                 f"A candidate {body.response.replace('_', ' ')} for {iv['round_type']}.", "/app/interviews")
+    return {"message": "updated"}
+
+
+@api.patch("/interviews/{iv_id}")
+async def update_interview(iv_id: str, body: InterviewUpdate, user: dict = Depends(require_roles("company", "admin"))):
+    iv = await db.interviews.find_one({"id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    if user["role"] != "admin" and iv["company_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your interview.")
+    updates = {k: v for k, v in body.model_dump().items() if v is not None}
+    if body.status and body.status not in INTERVIEW_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    if updates:
+        await db.interviews.update_one({"id": iv_id}, {"$set": updates})
+    label = updates.get("status", "updated")
+    await notify(iv["student_id"], "interview", "Interview updated",
+                 f"Your {iv['round_type']} interview was {label.replace('_', ' ')}.", "/app/interviews")
+    fresh = await db.interviews.find_one({"id": iv_id})
+    return await enrich_interview(fresh, include_student=True)
+
+
+@api.post("/interviews/{iv_id}/feedback")
+async def submit_feedback(iv_id: str, body: FeedbackInput, user: dict = Depends(require_roles("company", "admin"))):
+    iv = await db.interviews.find_one({"id": iv_id})
+    if not iv:
+        raise HTTPException(status_code=404, detail="Interview not found")
+    if user["role"] != "admin" and iv["company_id"] != user["id"]:
+        raise HTTPException(status_code=403, detail="Not your interview.")
+    if body.status not in {"pass", "fail", "hold"}:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    doc = body.model_dump()
+    doc.update({"id": str(uuid.uuid4()), "interview_id": iv_id, "student_id": iv["student_id"],
+                "company_id": iv["company_id"], "created_at": now_iso()})
+    await db.interview_feedback.replace_one({"interview_id": iv_id}, doc, upsert=True)
+    await db.interviews.update_one({"id": iv_id}, {"$set": {"status": "completed"}})
+    await notify(iv["student_id"], "interview", "Interview feedback recorded",
+                 f"Feedback for your {iv['round_type']} is in. Result: {body.status}.", "/app/interviews")
+    doc.pop("_id", None)
+    return doc
+
+
+# ------------------------------------------------------------------ Events & Calendar
+class EventInput(BaseModel):
+    title: str
+    description: Optional[str] = None
+    date: str
+    type: str = "event"
+
+
+@api.post("/events")
+async def create_event(body: EventInput, admin: dict = Depends(require_perm("view_dashboard"))):
+    doc = body.model_dump()
+    doc.update({"id": str(uuid.uuid4()), "created_by": admin["name"], "created_at": now_iso()})
+    await db.events.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/events")
+async def list_events(user: dict = Depends(get_current_user)):
+    ev = await db.events.find().sort("date", 1).to_list(500)
+    for e in ev:
+        e.pop("_id", None)
+    return ev
+
+
+@api.get("/calendar")
+async def calendar(user: dict = Depends(get_current_user)):
+    items = []
+    ev = await db.events.find().to_list(500)
+    for e in ev:
+        if e.get("date"):
+            items.append({"type": "event", "title": e["title"], "date": e["date"], "meta": e.get("type")})
+
+    if user["role"] == "student":
+        ivs = await db.interviews.find({"student_id": user["id"]}).to_list(500)
+        for i in ivs:
+            items.append({"type": "interview", "title": f"{i['round_type']} — {i.get('mode')}", "date": i.get("date"), "meta": i.get("time")})
+        regs = await db.drive_registrations.find({"student_id": user["id"], "withdrawn": False}).to_list(500)
+        for r in regs:
+            d = await db.drives.find_one({"id": r["drive_id"]})
+            if d and d.get("drive_date"):
+                items.append({"type": "drive", "title": d["title"], "date": d["drive_date"], "meta": "Drive"})
+    elif user["role"] == "company":
+        ivs = await db.interviews.find({"company_id": user["id"]}).to_list(1000)
+        for i in ivs:
+            items.append({"type": "interview", "title": f"{i['round_type']}", "date": i.get("date"), "meta": i.get("time")})
+        drives = await db.drives.find({"company_id": user["id"]}).to_list(500)
+        for d in drives:
+            if d.get("drive_date"):
+                items.append({"type": "drive", "title": d["title"], "date": d["drive_date"], "meta": "Drive"})
+            if d.get("registration_deadline"):
+                items.append({"type": "deadline", "title": f"{d['title']} deadline", "date": d["registration_deadline"], "meta": "Deadline"})
+    else:
+        drives = await db.drives.find({}).to_list(500)
+        for d in drives:
+            if d.get("drive_date"):
+                items.append({"type": "drive", "title": d["title"], "date": d["drive_date"], "meta": "Drive"})
+        ivs = await db.interviews.find({}).to_list(1000)
+        for i in ivs:
+            items.append({"type": "interview", "title": i["round_type"], "date": i.get("date"), "meta": i.get("time")})
+    items = [i for i in items if i.get("date")]
+    return items
+
+
+# ------------------------------------------------------------------ Reminders
+@api.get("/reminders")
+async def reminders(user: dict = Depends(get_current_user)):
+    out = []
+    today = now_utc().date()
+    horizon = today + timedelta(days=7)
+
+    def within(dstr):
+        try:
+            d = datetime.fromisoformat(dstr).date() if "T" in str(dstr) else datetime.strptime(str(dstr)[:10], "%Y-%m-%d").date()
+            return today <= d <= horizon, d
+        except Exception:
+            return False, None
+
+    if user["role"] == "student":
+        full = await db.users.find_one({"id": user["id"]})
+        if full.get("verification_status") == "pending":
+            out.append({"type": "verification", "title": "Verification pending", "detail": "Complete your profile & documents to get verified.", "date": None})
+        ivs = await db.interviews.find({"student_id": user["id"], "status": {"$in": ["scheduled", "rescheduled"]}}).to_list(200)
+        for i in ivs:
+            ok, d = within(i.get("date"))
+            if ok:
+                out.append({"type": "interview", "title": f"{i['round_type']} interview", "detail": f"{i.get('date')} at {i.get('time')} ({i.get('mode')})", "date": i.get("date")})
+        drives = await db.drives.find({"moderation": "approved", "status": "registration_open"}).to_list(200)
+        for d in drives:
+            ok, dt = within(d.get("registration_deadline"))
+            if ok:
+                out.append({"type": "deadline", "title": f"{d['title']} registration closes", "detail": f"Deadline {d.get('registration_deadline')}", "date": d.get("registration_deadline")})
+        offers = await db.offers.find({"student_id": user["id"], "status": "offered"}).to_list(100)
+        for o in offers:
+            out.append({"type": "offer", "title": "Offer awaiting response", "detail": f"{o.get('role')} — respond soon", "date": None})
+    elif user["role"] == "company":
+        ivs = await db.interviews.find({"company_id": user["id"], "status": {"$in": ["scheduled", "rescheduled"]}}).to_list(500)
+        for i in ivs:
+            ok, d = within(i.get("date"))
+            if ok:
+                out.append({"type": "interview", "title": f"Upcoming interview", "detail": f"{i.get('date')} at {i.get('time')}", "date": i.get("date")})
+    return out
+
+
+
 async def build_chat_context(user: dict) -> str:
     role = user["role"]
     if role == "student":
@@ -1349,6 +1969,10 @@ async def seed():
     await db.users.create_index("id", unique=True)
     await db.notifications.create_index("user_id")
     await db.audit_logs.create_index("created_at")
+    await db.password_reset_otps.create_index("email")
+    await db.security_logs.create_index("created_at")
+    await db.drives.create_index("company_id")
+    await db.interviews.create_index("student_id")
 
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     admin_password = os.environ["ADMIN_PASSWORD"]
@@ -1462,6 +2086,24 @@ async def seed_demo_data():
                 "student_id": sid, "status": st, "created_at": ts,
                 "timeline": [{"status": "applied", "at": ts, "note": "Application submitted"}]})
     logger.info("Demo data seeded.")
+
+    # demo campus drive + event
+    drive_id = str(uuid.uuid4())
+    await db.drives.insert_one({
+        "id": drive_id, "company_id": company_ids[0], "title": "Nimbus Cloud Campus Drive 2026",
+        "role": "Software Engineer", "package_min": 12, "package_max": 18, "location": "Bengaluru",
+        "description": "Full-day campus drive with aptitude, technical and HR rounds.",
+        "drive_type": "Full-Time", "eligibility_cgpa": 7.0, "max_backlogs": 0,
+        "branches": ["CSE", "IT"], "departments": [], "passing_year": 2026, "gender": "Any", "degree": "B.Tech",
+        "registration_deadline": (now_utc() + timedelta(days=5)).date().isoformat(),
+        "drive_date": (now_utc() + timedelta(days=10)).date().isoformat(),
+        "max_applicants": 100, "rounds": ["Aptitude", "Technical", "HR"],
+        "status": "registration_open", "moderation": "approved", "created_at": now_iso()})
+    await db.events.insert_one({
+        "id": str(uuid.uuid4()), "title": "Pre-Placement Talk: Nimbus Cloud",
+        "description": "Company presentation and Q&A.", "type": "ppt",
+        "date": (now_utc() + timedelta(days=3)).date().isoformat(),
+        "created_by": "Placement Cell Admin", "created_at": now_iso()})
 
 
 @app.on_event("startup")

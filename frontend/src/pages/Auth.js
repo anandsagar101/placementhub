@@ -125,6 +125,11 @@ export default function Auth({ mode = "login" }) {
             <div>
               <Label htmlFor="password" className="mb-2 block text-sm font-medium">Password</Label>
               <Input id="password" type="password" data-testid="auth-password-input" value={form.password} onChange={set("password")} required placeholder="••••••••" />
+              {isLogin && (
+                <div className="mt-2 text-right">
+                  <Link to="/forgot-password" className="text-sm font-medium text-primary hover:underline" data-testid="forgot-password-link">Forgot password?</Link>
+                </div>
+              )}
             </div>
 
             {error && (

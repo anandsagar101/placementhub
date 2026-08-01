@@ -8,10 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/context/ThemeContext";
 import { useAuth } from "@/context/AuthContext";
-
-const HERO_IMG = "https://images.unsplash.com/photo-1522071820081-009f0129c71c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBvZmZpY2UlMjB0ZWNoJTIwcmVjcnVpdG1lbnR8ZW58MHx8fHwxNzg1NTU0NzM2fDA&ixlib=rb-4.1.0&q=85";
-const STUDENT_IMG = "https://images.unsplash.com/photo-1640163561331-1b68a6474957?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1Mjh8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBjb2xsZWdlJTIwc3R1ZGVudCUyMHRlY2h8ZW58MHx8fHwxNzg1NTU0NzM3fDA&ixlib=rb-4.1.0&q=85";
-const RECRUITER_IMG = "https://images.unsplash.com/photo-1556761175-4b46a572b786?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjBvZmZpY2UlMjB0ZWNoJTIwcmVjcnVpdG1lbnR8ZW58MHx8fHwxNzg1NTU0NzM2fDA&ixlib=rb-4.1.0&q=85";
+import { IllustrationHero, IllustrationStudent, IllustrationRecruiter } from "@/components/illustrations";
 
 function Nav() {
   const { theme, toggle } = useTheme();
@@ -47,11 +44,11 @@ function Nav() {
 
 const personas = [
   {
-    icon: GraduationCap, title: "For Students", img: STUDENT_IMG,
+    icon: GraduationCap, title: "For Students", Ill: IllustrationStudent,
     points: ["Build a standout profile & upload resume", "Discover verified drives & apply in one click", "Track every application on a live timeline"],
   },
   {
-    icon: Building2, title: "For Recruiters", img: RECRUITER_IMG,
+    icon: Building2, title: "For Recruiters", Ill: IllustrationRecruiter,
     points: ["Post roles and reach qualified candidates", "Screen, shortlist & manage the funnel", "Analytics on applicants and hiring velocity"],
   },
 ];

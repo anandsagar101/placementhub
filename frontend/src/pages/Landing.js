@@ -109,7 +109,7 @@ export default function Landing() {
             className="relative"
           >
             <div className="overflow-hidden rounded-2xl border border-border shadow-2xl shadow-primary/5">
-              <img src={HERO_IMG} alt="Students and recruiters collaborating" className="h-[420px] w-full object-cover" />
+              <IllustrationHero className="h-[420px] w-full" />
             </div>
             <div className="absolute -bottom-5 -left-5 hidden rounded-xl border border-border bg-card p-4 shadow-xl sm:block">
               <div className="flex items-center gap-3">
@@ -156,7 +156,7 @@ export default function Landing() {
           <div className="grid gap-8 lg:grid-cols-2">
             {personas.map((p) => (
               <div key={p.title} className="overflow-hidden rounded-2xl border border-border bg-card">
-                <img src={p.img} alt={p.title} className="h-52 w-full object-cover" />
+                <p.Ill className="h-52 w-full" />
                 <div className="p-8">
                   <div className="flex items-center gap-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">

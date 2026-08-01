@@ -1964,22 +1964,37 @@ async def seed():
     await db.drives.create_index("company_id")
     await db.interviews.create_index("student_id")
 
-    admin_email = os.environ["ADMIN_EMAIL"].lower()
-    admin_password = os.environ["ADMIN_PASSWORD"]
-    existing = await db.users.find_one({"email": admin_email})
-    if not existing:
-        await db.users.insert_one({
-            "id": str(uuid.uuid4()), "name": "Placement Cell Admin", "email": admin_email,
-            "password_hash": hash_password(admin_password), "role": "admin", "admin_role": "super_admin",
-            "created_at": now_iso(), "profile_complete": True})
+    admin_email_env = os.environ.get("ADMIN_EMAIL")
+    admin_password_env = os.environ.get("ADMIN_PASSWORD")
+
+    if admin_email_env and admin_password_env:
+        admin_email = admin_email_env.lower()
+        existing = await db.users.find_one({"email": admin_email})
+
+        if not existing:
+            await db.users.insert_one({
+                "id": str(uuid.uuid4()),
+                "name": "Placement Cell Admin",
+                "email": admin_email,
+                "password_hash": hash_password(admin_password_env),
+                "role": "admin",
+                "admin_role": "super_admin",
+                "created_at": now_iso(),
+                "profile_complete": True
+            })
+            logger.info(f"Default Super Admin created: {admin_email}")
+
+        else:
+            if not existing.get("admin_role"):
+                await db.users.update_one(
+                    {"email": admin_email},
+                    {"$set": {"admin_role": "super_admin"}}
+                )
+
+            logger.info(f"Super Admin already exists: {admin_email}")
+
     else:
-        upd = {}
-        if not verify_password(admin_password, existing["password_hash"]):
-            upd["password_hash"] = hash_password(admin_password)
-        if not existing.get("admin_role"):
-            upd["admin_role"] = "super_admin"
-        if upd:
-            await db.users.update_one({"email": admin_email}, {"$set": upd})
+        logger.info("ADMIN_EMAIL / ADMIN_PASSWORD not configured. Skipping admin bootstrap.")
 
     # staff demo accounts
     for email, name, arole in [

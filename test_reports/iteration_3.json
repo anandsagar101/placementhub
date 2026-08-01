@@ -1,5 +1,5 @@
 {
-  "summary": "Tested the new Anthropic Claude Sonnet 5 chat assistant (streaming + history + role context) end-to-end. Backend: 6/7 pytest tests pass; the 1 failure is a parallel-worker race on shared user history (not a real bug). Frontend: student flow fully verified — floating toggle, panel, suggestions, live SSE streaming into assistant bubble ('Hi Aarav! Ready to succeed! 🚀'), history persistence across close/reopen AND full page reload, clear (DELETE) brings suggestions back. Recruiter and Admin logins also show chat-toggle-btn and open the panel correctly.",
+  "summary": "Tested the chat assistant (streaming + history + role context) end-to-end. Backend: 6/7 pytest tests pass; the 1 failure is a parallel-worker race on shared user history (not a real bug). Frontend: student flow fully verified — floating toggle, panel, suggestions, live SSE streaming into assistant bubble ('Hi Aarav! Ready to succeed! 🚀'), history persistence across close/reopen AND full page reload, clear (DELETE) brings suggestions back. Recruiter and Admin logins also show chat-toggle-btn and open the panel correctly.",
   "backend_issues": {
     "critical": [],
     "minor": [

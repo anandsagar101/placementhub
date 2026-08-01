@@ -1921,7 +1921,7 @@ async def chat(body: ChatInput, user: dict = Depends(get_current_user)):
                 full_text += chunk
                 yield f"data: {json.dumps({'delta': chunk})}\n\n"
         except Exception as e:
-            logger.exception(f"Chat stream failed: {e}")
+            logger.error(f"Chat stream failed: {e}")
             if not full_text:
                 full_text = "Sorry, I'm having trouble responding right now. Please try again in a moment."
                 yield f"data: {json.dumps({'delta': full_text})}\n\n"

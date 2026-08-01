@@ -76,8 +76,6 @@ class GeminiService:
                 )
             return self._response_text(response)
         except Exception as exc:
-            import logging
-            logging.exception("Gemini generate_text exception")
             raise self._service_error(exc) from exc
         finally:
             await async_client.aclose()
@@ -97,8 +95,6 @@ class GeminiService:
                     if isinstance(text, str) and text:
                         yield text
         except Exception as exc:
-            import logging
-            logging.exception("Gemini stream_text exception")
             raise self._service_error(exc) from exc
         finally:
             await async_client.aclose()

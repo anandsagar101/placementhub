@@ -6,6 +6,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, Query
+from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
@@ -339,6 +340,10 @@ class StaffInput(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
     admin_role: str
+
+
+class ChatInput(BaseModel):
+    message: str
 
 
 # ------------------------------------------------------------------ auth
@@ -1223,11 +1228,105 @@ async def ai_recommendations(user: dict = Depends(require_roles("student"))):
     return {"recommendations": out}
 
 
+# ------------------------------------------------------------------ AI chat assistant (Claude Sonnet 5)
+async def build_chat_context(user: dict) -> str:
+    role = user["role"]
+    if role == "student":
+        full = await db.users.find_one({"id": user["id"]})
+        apps = await db.applications.count_documents({"student_id": user["id"]})
+        comp = profile_completion(full)
+        ctx = (
+            f"You are PlacementHub AI, a friendly, concise career & placement assistant for a STUDENT named {full.get('name')}. "
+            "Help with resume tips, interview preparation, eligibility questions, skill-building advice, and general career guidance. "
+            "When relevant, use the student's context below to give personalised answers. Keep answers practical and encouraging. "
+            "Use short paragraphs and bullet points where helpful.\n\n"
+            "STUDENT CONTEXT:\n"
+            f"- Branch: {full.get('branch')} | Department: {full.get('department')} | Degree: {full.get('degree')}\n"
+            f"- CGPA: {full.get('cgpa')} | Backlogs: {full.get('backlogs')} | Passing year: {full.get('graduation_year')}\n"
+            f"- Skills: {', '.join(full.get('skills') or []) or 'none listed'}\n"
+            f"- Projects: {', '.join(full.get('projects') or []) or 'none listed'}\n"
+            f"- Verification: {full.get('verification_status')} | Profile completion: {comp['percentage']}% "
+            f"(missing: {', '.join(comp['missing']) or 'nothing'})\n"
+            f"- Applications submitted: {apps} | Placed: {full.get('placed')}\n"
+        )
+        return ctx
+    if role == "company":
+        full = await db.users.find_one({"id": user["id"]})
+        return (
+            f"You are PlacementHub AI, a concise assistant for a RECRUITER at {full.get('company_name') or full.get('name')}. "
+            "Help write compelling job descriptions, define screening/eligibility criteria, plan hiring drives, and share campus-hiring best practices. "
+            "Be practical and professional."
+        )
+    return (
+        "You are PlacementHub AI, an assistant for a college PLACEMENT CELL ADMIN. "
+        "Help with placement operations, interpreting analytics, drafting policies, communication templates, and improving placement outcomes. "
+        "Be practical and professional."
+    )
+
+
+@api.get("/chat/history")
+async def chat_history(user: dict = Depends(get_current_user)):
+    msgs = await db.chat_messages.find({"user_id": user["id"]}).sort("created_at", 1).to_list(200)
+    for m in msgs:
+        m.pop("_id", None)
+    return msgs
+
+
+@api.delete("/chat/history")
+async def clear_chat(user: dict = Depends(get_current_user)):
+    await db.chat_messages.delete_many({"user_id": user["id"]})
+    return {"message": "cleared"}
+
+
+@api.post("/chat")
+async def chat(body: ChatInput, user: dict = Depends(get_current_user)):
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
+
+    text = body.message.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    ts = now_iso()
+    await db.chat_messages.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user["id"], "role": "user",
+        "content": text, "created_at": ts})
+
+    system = await build_chat_context(user)
+    prior = await db.chat_messages.find({"user_id": user["id"]}).sort("created_at", 1).to_list(200)
+    recent = prior[-12:]
+    transcript = "\n".join(
+        f"{'Student' if m['role'] == 'user' else 'Assistant'}: {m['content']}" for m in recent[:-1]
+    )
+    prompt = (f"Conversation so far:\n{transcript}\n\nUser: {text}\nAssistant:" if transcript else text)
+
+    async def event_generator():
+        full_text = ""
+        try:
+            llm = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"chat_{user['id']}",
+                          system_message=system).with_model("anthropic", "claude-sonnet-5")
+            async for ev in llm.stream_message(UserMessage(text=prompt)):
+                if isinstance(ev, TextDelta):
+                    full_text += ev.content
+                    yield f"data: {json.dumps({'delta': ev.content})}\n\n"
+                elif isinstance(ev, StreamDone):
+                    break
+        except Exception as e:
+            logger.error(f"Chat stream failed: {e}")
+            if not full_text:
+                full_text = "Sorry, I'm having trouble responding right now. Please try again in a moment."
+                yield f"data: {json.dumps({'delta': full_text})}\n\n"
+        await db.chat_messages.insert_one({
+            "id": str(uuid.uuid4()), "user_id": user["id"], "role": "assistant",
+            "content": full_text, "created_at": now_iso()})
+        yield f"data: {json.dumps({'done': True})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
+
+
 @api.get("/")
 async def root():
     return {"message": "PlacementHub API running"}
-
-
 @api.get("/health")
 async def health():
     return {"status": "ok"}

@@ -9,6 +9,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { cn } from "@/lib/utils";
 import NotificationBell from "@/components/NotificationBell";
+import ChatWidget from "@/components/ChatWidget";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
@@ -174,6 +175,7 @@ export default function DashboardLayout({ children }) {
 
         <main className="mx-auto max-w-7xl px-4 py-8 sm:px-8">{children}</main>
       </div>
+      <ChatWidget />
     </div>
   );
 }

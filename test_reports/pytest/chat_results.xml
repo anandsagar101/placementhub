@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="7" time="10.973" timestamp="2026-08-01T05:20:05.055759+00:00" hostname="agent-env-cf586890-ec2f-4e31-a580-e1c8e690e11a"><testcase classname="tests.test_chat.TestChatHistory" name="test_clear_then_history_empty" time="3.731"><failure message="AssertionError: assert [{'id': '9b94...esume?', ...}] == []&#10;  &#10;  Left contains one more item: {'id': '9b940a87-c06b-4a98-b3ea-a6e5e0e11a87', 'user_id': '285b9da8-70bf-4a1d-8202-9266f23330db', 'role': 'user', 'content': 'In one short sentence, what is a resume?', ...}&#10;  &#10;  Full diff:&#10;  - []&#10;  + [&#10;  +     {...&#10;  &#10;  ...Full output truncated (7 lines hidden), use '-vv' to show">backend/tests/test_chat.py:70: in test_clear_then_history_empty
+    assert r.json() == []
+E   AssertionError: assert [{'id': '9b94...esume?', ...}] == []
+E     
+E     Left contains one more item: {'id': '9b940a87-c06b-4a98-b3ea-a6e5e0e11a87', 'user_id': '285b9da8-70bf-4a1d-8202-9266f23330db', 'role': 'user', 'content': 'In one short sentence, what is a resume?', ...}
+E     
+E     Full diff:
+E     - []
+E     + [
+E     +     {...
+E     
+E     ...Full output truncated (7 lines hidden), use '-vv' to show</failure></testcase><testcase classname="tests.test_chat.TestChatStreaming" name="test_student_stream_and_persist" time="6.892" /><testcase classname="tests.test_chat.TestChatHistory" name="test_unauth_chat_blocked" time="0.216" /><testcase classname="tests.test_chat.TestChatHistory" name="test_empty_message_400" time="0.003" /><testcase classname="tests.test_chat.TestChatStreaming" name="test_recruiter_role_context" time="2.139" /><testcase classname="tests.test_chat.TestChatStreaming" name="test_admin_role_context" time="1.634" /><testcase classname="tests.test_chat.TestChatStreaming" name="test_clear_removes_history" time="0.006" /></testsuite></testsuites>

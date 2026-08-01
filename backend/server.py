@@ -278,6 +278,7 @@ async def list_jobs(
             {"title": {"$regex": search, "$options": "i"}},
             {"description": {"$regex": search, "$options": "i"}},
             {"location": {"$regex": search, "$options": "i"}},
+            {"skills": {"$regex": search, "$options": "i"}},
         ]
     jobs = await db.jobs.find(query).sort("created_at", -1).to_list(500)
     enriched = [await enrich_job(j) for j in jobs]

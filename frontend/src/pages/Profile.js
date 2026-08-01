@@ -28,10 +28,16 @@ export default function Profile() {
     bio: user?.bio || "",
     // student
     branch: user?.branch || "",
+    department: user?.department || "",
+    section: user?.section || "",
     degree: user?.degree || "",
     graduation_year: user?.graduation_year || "",
     cgpa: user?.cgpa || "",
+    backlogs: user?.backlogs ?? "",
+    gender: user?.gender || "",
     skills: (user?.skills || []).join(", "),
+    projects: (user?.projects || []).join(", "),
+    certificates: (user?.certificates || []).join(", "),
     resume_url: user?.resume_url || "",
     linkedin: user?.linkedin || "",
     github: user?.github || "",
@@ -55,11 +61,15 @@ export default function Profile() {
       });
     } else {
       Object.assign(payload, {
-        branch: form.branch, degree: form.degree, bio: form.bio,
+        branch: form.branch, department: form.department, section: form.section,
+        degree: form.degree, bio: form.bio, gender: form.gender,
         resume_url: form.resume_url, linkedin: form.linkedin, github: form.github,
         graduation_year: form.graduation_year ? Number(form.graduation_year) : undefined,
         cgpa: form.cgpa ? Number(form.cgpa) : undefined,
+        backlogs: form.backlogs !== "" ? Number(form.backlogs) : undefined,
         skills: form.skills ? form.skills.split(",").map((s) => s.trim()).filter(Boolean) : [],
+        projects: form.projects ? form.projects.split(",").map((s) => s.trim()).filter(Boolean) : [],
+        certificates: form.certificates ? form.certificates.split(",").map((s) => s.trim()).filter(Boolean) : [],
       });
     }
     try {
@@ -110,14 +120,24 @@ export default function Profile() {
               <Field label="Phone"><Input data-testid="pf-phone" value={form.phone} onChange={set("phone")} /></Field>
               <Field label="Degree"><Input data-testid="pf-degree" value={form.degree} onChange={set("degree")} placeholder="e.g. B.Tech" /></Field>
               <Field label="Branch"><Input data-testid="pf-branch" value={form.branch} onChange={set("branch")} placeholder="e.g. CSE" /></Field>
+              <Field label="Department"><Input data-testid="pf-department" value={form.department} onChange={set("department")} placeholder="e.g. Computer Science" /></Field>
+              <Field label="Section"><Input data-testid="pf-section" value={form.section} onChange={set("section")} placeholder="e.g. A" /></Field>
               <Field label="Graduation year"><Input data-testid="pf-gradyear" type="number" value={form.graduation_year} onChange={set("graduation_year")} placeholder="2026" /></Field>
               <Field label="CGPA"><Input data-testid="pf-cgpa" type="number" step="0.01" value={form.cgpa} onChange={set("cgpa")} placeholder="8.5" /></Field>
+              <Field label="Active backlogs"><Input data-testid="pf-backlogs" type="number" value={form.backlogs} onChange={set("backlogs")} placeholder="0" /></Field>
+              <Field label="Gender"><Input data-testid="pf-gender" value={form.gender} onChange={set("gender")} placeholder="Male / Female / Other" /></Field>
               <Field label="Location"><Input data-testid="pf-location" value={form.location} onChange={set("location")} /></Field>
               <Field label="Resume link"><Input data-testid="pf-resume" value={form.resume_url} onChange={set("resume_url")} placeholder="https://drive..." /></Field>
               <Field label="LinkedIn"><Input data-testid="pf-linkedin" value={form.linkedin} onChange={set("linkedin")} placeholder="https://linkedin.com/in/" /></Field>
               <Field label="GitHub"><Input data-testid="pf-github" value={form.github} onChange={set("github")} placeholder="https://github.com/" /></Field>
               <div className="sm:col-span-2">
                 <Field label="Skills (comma separated)"><Input data-testid="pf-skills" value={form.skills} onChange={set("skills")} placeholder="Python, React, SQL" /></Field>
+              </div>
+              <div className="sm:col-span-2">
+                <Field label="Projects (comma separated)"><Input data-testid="pf-projects" value={form.projects} onChange={set("projects")} placeholder="E-commerce app, Chatbot" /></Field>
+              </div>
+              <div className="sm:col-span-2">
+                <Field label="Certificates (comma separated)"><Input data-testid="pf-certificates" value={form.certificates} onChange={set("certificates")} placeholder="AWS CCP, Google Data Analytics" /></Field>
               </div>
               <div className="sm:col-span-2">
                 <Field label="Bio"><Textarea data-testid="pf-bio" value={form.bio} onChange={set("bio")} rows={4} placeholder="Tell recruiters about yourself" /></Field>

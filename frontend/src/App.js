@@ -14,13 +14,19 @@ import ManageJobs from "@/pages/ManageJobs";
 import StudentDashboard from "@/pages/student/StudentDashboard";
 import BrowseJobs from "@/pages/student/BrowseJobs";
 import MyApplications from "@/pages/student/MyApplications";
+import Offers from "@/pages/student/Offers";
+import Documents from "@/pages/student/Documents";
+import AiInsights from "@/pages/student/AiInsights";
 
 import CompanyDashboard from "@/pages/company/CompanyDashboard";
 import PostJob from "@/pages/company/PostJob";
 import Applicants from "@/pages/company/Applicants";
 
 import AdminDashboard from "@/pages/admin/AdminDashboard";
-import ManageUsers from "@/pages/admin/ManageUsers";
+import AdminStudents from "@/pages/admin/AdminStudents";
+import AdminCompanies from "@/pages/admin/AdminCompanies";
+import AuditLogs from "@/pages/admin/AuditLogs";
+import Staff from "@/pages/admin/Staff";
 
 function FullLoader() {
   return (
@@ -58,17 +64,19 @@ function AppRoutes() {
       <Route path="/login" element={<GuestOnly><Auth mode="login" /></GuestOnly>} />
       <Route path="/register" element={<GuestOnly><Auth mode="register" /></GuestOnly>} />
 
-      <Route
-        path="/app"
-        element={<Protected><DashboardLayout><Outlet /></DashboardLayout></Protected>}
-      >
+      <Route path="/app" element={<Protected><DashboardLayout><Outlet /></DashboardLayout></Protected>}>
         <Route index element={<RoleRoute map={{ student: StudentDashboard, company: CompanyDashboard, admin: AdminDashboard }} />} />
         <Route path="jobs" element={<RoleRoute map={{ student: BrowseJobs, company: ManageJobs, admin: ManageJobs }} />} />
+        <Route path="ai" element={<RoleRoute map={{ student: AiInsights }} />} />
         <Route path="applications" element={<RoleRoute map={{ student: MyApplications }} />} />
+        <Route path="offers" element={<RoleRoute map={{ student: Offers }} />} />
+        <Route path="documents" element={<RoleRoute map={{ student: Documents }} />} />
         <Route path="post-job" element={<RoleRoute map={{ company: PostJob }} />} />
         <Route path="applicants" element={<RoleRoute map={{ company: Applicants }} />} />
-        <Route path="students" element={<RoleRoute map={{ admin: () => <ManageUsers role="student" /> }} />} />
-        <Route path="companies" element={<RoleRoute map={{ admin: () => <ManageUsers role="company" /> }} />} />
+        <Route path="students" element={<RoleRoute map={{ admin: AdminStudents }} />} />
+        <Route path="companies" element={<RoleRoute map={{ admin: AdminCompanies }} />} />
+        <Route path="audit" element={<RoleRoute map={{ admin: AuditLogs }} />} />
+        <Route path="staff" element={<RoleRoute map={{ admin: Staff }} />} />
         <Route path="profile" element={<RoleRoute map={{ student: Profile, company: Profile }} />} />
       </Route>
 
@@ -76,8 +84,6 @@ function AppRoutes() {
     </Routes>
   );
 }
-
-// end routes
 
 function App() {
   return (

@@ -1,11 +1,13 @@
 import React from "react";
 import useSWR from "swr";
+import { Link } from "react-router-dom";
 import {
   GraduationCap, Building2, Briefcase, FileText, TrendingUp, Loader2, Trophy,
+  Clock, ShieldAlert, FileWarning, IndianRupee,
 } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
-  BarChart, Bar,
+  BarChart, Bar, Legend,
 } from "recharts";
 import api from "@/lib/api";
 import { StatCard, PageHeader } from "@/components/shared";
@@ -30,6 +32,14 @@ export default function AdminDashboard() {
         <StatCard icon={FileText} label="Applications" value={stats.total_applications} accent="primary" testid="stat-apps" />
         <StatCard icon={Trophy} label="Placed" value={stats.placed} accent="success" testid="stat-placed" />
         <StatCard icon={TrendingUp} label="Placement Rate" value={`${stats.placement_rate}%`} accent="success" testid="stat-rate" />
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <Link to="/app/students?verification=pending" className="block"><StatCard icon={Clock} label="Awaiting Verification" value={stats.awaiting_verification} accent="warning" testid="stat-await-verif" /></Link>
+        <Link to="/app/companies?approval=pending" className="block"><StatCard icon={ShieldAlert} label="Recruiter Approvals" value={stats.awaiting_recruiter_approval} accent="violet" testid="stat-await-recruiter" /></Link>
+        <StatCard icon={FileWarning} label="Pending Documents" value={stats.pending_documents} accent="warning" testid="stat-pending-docs" />
+        <StatCard icon={IndianRupee} label="Highest Package" value={`${stats.highest_package} LPA`} accent="success" testid="stat-highest" />
+        <StatCard icon={IndianRupee} label="Average Package" value={`${stats.avg_package} LPA`} accent="primary" testid="stat-avg" />
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-3">
@@ -73,6 +83,25 @@ export default function AdminDashboard() {
             <p className="py-16 text-center text-sm text-muted-foreground">No data yet</p>
           )}
         </div>
+      </div>
+
+      <div className="mt-6 rounded-xl border border-border bg-card p-6">
+        <h3 className="mb-4 font-heading text-lg font-semibold">Department-wise placement</h3>
+        {stats.dept_wise?.length ? (
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={stats.dept_wise}>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+              <YAxis allowDecimals={false} tick={{ fontSize: 11, fill: "hsl(var(--muted-foreground))" }} />
+              <Tooltip cursor={{ fill: "hsl(var(--muted))" }} />
+              <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+              <Bar dataKey="total" name="Total" fill="hsl(var(--muted-foreground))" radius={[6, 6, 0, 0]} />
+              <Bar dataKey="placed" name="Placed" fill="hsl(var(--primary))" radius={[6, 6, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        ) : (
+          <p className="py-16 text-center text-sm text-muted-foreground">No data yet</p>
+        )}
       </div>
     </div>
   );

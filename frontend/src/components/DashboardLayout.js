@@ -2,11 +2,13 @@ import React, { useState } from "react";
 import { NavLink, useNavigate, useLocation } from "react-router-dom";
 import {
   GraduationCap, LayoutDashboard, Briefcase, FileText, User, Building2,
-  PlusCircle, Users, ClipboardList, Moon, Sun, LogOut, Menu, X,
+  PlusCircle, Users, ClipboardList, Moon, Sun, LogOut, Menu, Sparkles,
+  Award, FolderOpen, ScrollText, ShieldCheck,
 } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { cn } from "@/lib/utils";
+import NotificationBell from "@/components/NotificationBell";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator, DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
@@ -15,7 +17,10 @@ const NAV = {
   student: [
     { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true },
     { to: "/app/jobs", label: "Browse Jobs", icon: Briefcase },
+    { to: "/app/ai", label: "AI Insights", icon: Sparkles },
     { to: "/app/applications", label: "My Applications", icon: FileText },
+    { to: "/app/offers", label: "Offers", icon: Award },
+    { to: "/app/documents", label: "Documents", icon: FolderOpen },
     { to: "/app/profile", label: "My Profile", icon: User },
   ],
   company: [
@@ -30,10 +35,16 @@ const NAV = {
     { to: "/app/jobs", label: "All Jobs", icon: Briefcase },
     { to: "/app/students", label: "Students", icon: GraduationCap },
     { to: "/app/companies", label: "Companies", icon: Building2 },
+    { to: "/app/audit", label: "Audit Logs", icon: ScrollText, perm: "view_audit" },
+    { to: "/app/staff", label: "Staff & Roles", icon: ShieldCheck, superOnly: true },
   ],
 };
 
+const ADMIN_ROLE_LABEL = {
+  super_admin: "Super Admin", placement_officer: "Placement Officer", department_coordinator: "Dept Coordinator",
+};
 const ROLE_LABEL = { student: "Student", company: "Recruiter", admin: "Placement Cell" };
+const AUDIT_ROLES = new Set(["super_admin", "placement_officer"]);
 
 function initials(name = "") {
   return name.split(" ").map((n) => n[0]).slice(0, 2).join("").toUpperCase() || "U";
@@ -45,7 +56,12 @@ export default function DashboardLayout({ children }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [open, setOpen] = useState(false);
-  const nav = NAV[user?.role] || [];
+  const adminRole = user?.admin_role;
+  const nav = (NAV[user?.role] || []).filter((item) => {
+    if (item.superOnly) return adminRole === "super_admin";
+    if (item.perm === "view_audit") return AUDIT_ROLES.has(adminRole);
+    return true;
+  });
 
   const doLogout = async () => {
     await logout();
@@ -62,7 +78,7 @@ export default function DashboardLayout({ children }) {
       </div>
       <nav className="flex-1 space-y-1 p-4">
         <p className="px-3 pb-2 text-xs font-semibold uppercase tracking-[0.15em] text-muted-foreground">
-          {ROLE_LABEL[user?.role]}
+          {user?.role === "admin" ? (ADMIN_ROLE_LABEL[adminRole] || "Placement Cell") : ROLE_LABEL[user?.role]}
         </p>
         {nav.map((item) => (
           <NavLink
@@ -131,6 +147,8 @@ export default function DashboardLayout({ children }) {
             </span>
           </div>
 
+          <div className="flex items-center gap-2">
+          <NotificationBell />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button className="flex items-center gap-2 rounded-full border border-border py-1 pl-1 pr-3 transition-colors hover:bg-muted" data-testid="user-menu-btn">
@@ -151,6 +169,7 @@ export default function DashboardLayout({ children }) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          </div>
         </header>
 
         <main className="mx-auto max-w-7xl px-4 py-8 sm:px-8">{children}</main>

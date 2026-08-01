@@ -2,7 +2,7 @@ import React from "react";
 import useSWR from "swr";
 import { Link } from "react-router-dom";
 import {
-  Briefcase, Users, CheckCircle2, UserCheck, PlusCircle, ArrowRight, Loader2,
+  Briefcase, Users, CheckCircle2, UserCheck, PlusCircle, ArrowRight, Loader2, ShieldAlert,
 } from "lucide-react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -33,6 +33,16 @@ export default function CompanyDashboard() {
       >
         <Link to="/app/post-job"><Button className="rounded-full" data-testid="post-job-cta"><PlusCircle className="mr-2 h-4 w-4" /> Post a job</Button></Link>
       </PageHeader>
+
+      {stats && stats.approval_status && stats.approval_status !== "approved" && (
+        <div className={`mb-6 flex items-start gap-3 rounded-xl border p-4 ${stats.approval_status === "rejected" ? "border-rose-500/30 bg-rose-500/10 text-rose-600" : "border-amber-500/30 bg-amber-500/10 text-amber-600"}`} data-testid="approval-banner">
+          <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0" />
+          <div>
+            <p className="font-semibold">{stats.approval_status === "rejected" ? "Recruiter account rejected" : "Recruiter account pending approval"}</p>
+            <p className="text-sm">{stats.approval_status === "rejected" ? "The placement cell rejected your account. Contact admin for details." : "You can post jobs once the placement cell approves your recruiter account."}</p>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard icon={Briefcase} label="Active Jobs" value={stats?.active_jobs ?? "—"} accent="primary" testid="stat-active-jobs" />

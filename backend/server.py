@@ -9,12 +9,17 @@ from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Respons
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 import uuid
 import logging
+import json
+import time
 import jwt
 import bcrypt
+import cloudinary
+import cloudinary.utils
+import cloudinary.uploader
 
 # ------------------------------------------------------------------ setup
 mongo_url = os.environ['MONGO_URL']
@@ -23,7 +28,16 @@ db = client[os.environ['DB_NAME']]
 
 JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
-ACCESS_TOKEN_MINUTES = 60 * 24 * 7  # 7 days
+ACCESS_TOKEN_MINUTES = 60 * 24 * 7
+
+EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
+
+cloudinary.config(
+    cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.environ.get("CLOUDINARY_API_KEY"),
+    api_secret=os.environ.get("CLOUDINARY_API_SECRET"),
+    secure=True,
+)
 
 app = FastAPI(title="PlacementHub API")
 api = APIRouter(prefix="/api")
@@ -31,13 +45,36 @@ api = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("placementhub")
 
-ROLES = {"student", "company", "admin"}
 APPLICATION_STATUSES = ["applied", "under_review", "shortlisted", "interview", "selected", "rejected"]
+ADMIN_ROLES = ["super_admin", "placement_officer", "department_coordinator"]
+DOC_TYPES = ["profile_photo", "resume", "marksheet_10", "marksheet_12", "semester_marksheet",
+             "aadhar", "pan", "certificate", "offer_letter", "portfolio", "other"]
+MANDATORY_DOCS = ["resume", "marksheet_10", "marksheet_12"]
+MANDATORY_FIELDS = ["phone", "branch", "degree", "graduation_year", "cgpa"]
+FREEZE_REASONS = ["Already Placed", "Disciplinary Action", "Academic Issue", "Placement Policy", "Manual"]
+
+# permission -> which admin_roles have it
+PERMISSIONS = {
+    "verify_students": {"super_admin", "placement_officer", "department_coordinator"},
+    "verify_documents": {"super_admin", "placement_officer", "department_coordinator"},
+    "manage_students": {"super_admin", "placement_officer", "department_coordinator"},
+    "freeze_students": {"super_admin", "placement_officer"},
+    "approve_recruiters": {"super_admin", "placement_officer"},
+    "moderate_jobs": {"super_admin", "placement_officer"},
+    "view_audit": {"super_admin", "placement_officer"},
+    "manage_staff": {"super_admin"},
+    "delete_users": {"super_admin"},
+    "view_dashboard": {"super_admin", "placement_officer", "department_coordinator"},
+}
 
 
 # ------------------------------------------------------------------ helpers
 def now_utc():
     return datetime.now(timezone.utc)
+
+
+def now_iso():
+    return now_utc().isoformat()
 
 
 def hash_password(password: str) -> str:
@@ -52,12 +89,8 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def create_access_token(user_id: str, role: str) -> str:
-    payload = {
-        "sub": user_id,
-        "role": role,
-        "type": "access",
-        "exp": now_utc() + timedelta(minutes=ACCESS_TOKEN_MINUTES),
-    }
+    payload = {"sub": user_id, "role": role, "type": "access",
+               "exp": now_utc() + timedelta(minutes=ACCESS_TOKEN_MINUTES)}
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
@@ -96,6 +129,107 @@ def require_roles(*roles):
     return checker
 
 
+def require_perm(perm: str):
+    async def checker(user: dict = Depends(get_current_user)) -> dict:
+        if user["role"] != "admin":
+            raise HTTPException(status_code=403, detail="Admin access required.")
+        admin_role = user.get("admin_role", "super_admin")
+        if admin_role not in PERMISSIONS.get(perm, set()):
+            raise HTTPException(status_code=403, detail=f"Your role ({admin_role.replace('_', ' ')}) cannot perform this action.")
+        return user
+    return checker
+
+
+async def notify(user_id: str, ntype: str, title: str, message: str, link: Optional[str] = None):
+    await db.notifications.insert_one({
+        "id": str(uuid.uuid4()), "user_id": user_id, "type": ntype,
+        "title": title, "message": message, "link": link,
+        "read": False, "created_at": now_iso(),
+    })
+
+
+async def notify_admins(ntype: str, title: str, message: str, link: Optional[str] = None):
+    admins = await db.users.find({"role": "admin"}).to_list(100)
+    for a in admins:
+        await notify(a["id"], ntype, title, message, link)
+
+
+async def audit(admin: dict, action: str, target_id: Optional[str] = None,
+                target_name: Optional[str] = None, details: Optional[str] = None):
+    await db.audit_logs.insert_one({
+        "id": str(uuid.uuid4()), "admin_id": admin["id"], "admin_name": admin.get("name"),
+        "admin_role": admin.get("admin_role"), "action": action,
+        "target_user_id": target_id, "target_name": target_name,
+        "details": details, "created_at": now_iso(),
+    })
+
+
+# ---------- profile completion & eligibility ----------
+def profile_completion(user: dict) -> dict:
+    docs = user.get("documents", {}) or {}
+    checks = []
+    checks.append(("Phone", bool(user.get("phone"))))
+    checks.append(("Branch", bool(user.get("branch"))))
+    checks.append(("Department", bool(user.get("department"))))
+    checks.append(("Degree", bool(user.get("degree"))))
+    checks.append(("Graduation Year", bool(user.get("graduation_year"))))
+    checks.append(("CGPA", user.get("cgpa") is not None))
+    checks.append(("Skills", bool(user.get("skills"))))
+    checks.append(("Projects", bool(user.get("projects"))))
+    checks.append(("Certificates", bool(user.get("certificates"))))
+    checks.append(("LinkedIn", bool(user.get("linkedin"))))
+    checks.append(("Bio", bool(user.get("bio"))))
+    checks.append(("Profile Photo", bool(docs.get("profile_photo"))))
+    checks.append(("Resume", bool(docs.get("resume"))))
+    checks.append(("10th Marksheet", bool(docs.get("marksheet_10"))))
+    checks.append(("12th Marksheet", bool(docs.get("marksheet_12"))))
+    total = len(checks)
+    done = sum(1 for _, ok in checks if ok)
+    missing = [label for label, ok in checks if not ok]
+    return {"percentage": round(done / total * 100), "missing": missing, "done": done, "total": total}
+
+
+def mandatory_profile_ok(user: dict) -> dict:
+    missing = []
+    for f in MANDATORY_FIELDS:
+        if not user.get(f) and user.get(f) != 0:
+            missing.append(f)
+    if not user.get("skills"):
+        missing.append("skills")
+    docs = user.get("documents", {}) or {}
+    for d in MANDATORY_DOCS:
+        if not docs.get(d):
+            missing.append(d.replace("_", " "))
+    return {"ok": len(missing) == 0, "missing": missing}
+
+
+def eligibility_check(student: dict, job: dict) -> dict:
+    checks = []
+
+    def add(label, required, yours, passed):
+        checks.append({"label": label, "required": str(required), "yours": str(yours), "pass": passed})
+
+    if job.get("eligibility_cgpa"):
+        s = student.get("cgpa") or 0
+        add("Minimum CGPA", job["eligibility_cgpa"], s, s >= job["eligibility_cgpa"])
+    if job.get("max_backlogs") is not None:
+        b = student.get("backlogs") or 0
+        add("Maximum Backlogs", job["max_backlogs"], b, b <= job["max_backlogs"])
+    if job.get("branches"):
+        add("Branch", ", ".join(job["branches"]), student.get("branch") or "—", student.get("branch") in job["branches"])
+    if job.get("departments"):
+        add("Department", ", ".join(job["departments"]), student.get("department") or "—", student.get("department") in job["departments"])
+    if job.get("passing_year"):
+        add("Passing Year", job["passing_year"], student.get("graduation_year") or "—", student.get("graduation_year") == job["passing_year"])
+    if job.get("gender") and job.get("gender") != "Any":
+        add("Gender", job["gender"], student.get("gender") or "—", student.get("gender") == job["gender"])
+    if job.get("degree"):
+        add("Degree", job["degree"], student.get("degree") or "—", (student.get("degree") or "").lower() == job["degree"].lower())
+
+    reasons = [f"Required {c['label']}: {c['required']} · Yours: {c['yours']}" for c in checks if not c["pass"]]
+    return {"eligible": len(reasons) == 0, "reasons": reasons, "checks": checks}
+
+
 # ------------------------------------------------------------------ models
 class RegisterInput(BaseModel):
     name: str
@@ -114,14 +248,18 @@ class ProfileUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
     name: Optional[str] = None
     phone: Optional[str] = None
-    # student
     branch: Optional[str] = None
+    department: Optional[str] = None
+    section: Optional[str] = None
     degree: Optional[str] = None
     graduation_year: Optional[int] = None
     cgpa: Optional[float] = None
+    backlogs: Optional[int] = None
+    gender: Optional[str] = None
     skills: Optional[List[str]] = None
+    projects: Optional[List[str]] = None
+    certificates: Optional[List[str]] = None
     bio: Optional[str] = None
-    resume_url: Optional[str] = None
     location: Optional[str] = None
     linkedin: Optional[str] = None
     github: Optional[str] = None
@@ -137,16 +275,22 @@ class ProfileUpdate(BaseModel):
 class JobInput(BaseModel):
     title: str
     description: str
-    role_type: str = "Full-time"          # Full-time / Internship / Part-time
+    role_type: str = "Full-time"
     location: str = "Remote"
-    ctc_min: Optional[float] = None       # LPA
+    ctc_min: Optional[float] = None
     ctc_max: Optional[float] = None
     skills: List[str] = []
     eligibility_cgpa: Optional[float] = None
+    max_backlogs: Optional[int] = None
     branches: List[str] = []
+    departments: List[str] = []
+    passing_year: Optional[int] = None
+    gender: Optional[str] = "Any"
+    degree: Optional[str] = None
     openings: int = 1
     deadline: Optional[str] = None
     experience: str = "Fresher"
+    is_dream_company: bool = False
 
 
 class StatusUpdate(BaseModel):
@@ -154,7 +298,50 @@ class StatusUpdate(BaseModel):
     note: Optional[str] = None
 
 
-# ------------------------------------------------------------------ auth routes
+class VerificationDecision(BaseModel):
+    status: str  # approved / rejected / changes_requested
+    remarks: Optional[str] = None
+
+
+class FreezeInput(BaseModel):
+    frozen: bool
+    reason: Optional[str] = None
+
+
+class DocumentInput(BaseModel):
+    doc_type: str
+    url: str
+    public_id: str
+    resource_type: str = "image"
+    format: Optional[str] = None
+
+
+class DocDecision(BaseModel):
+    status: str  # verified / rejected / reupload
+    remarks: Optional[str] = None
+
+
+class OfferInput(BaseModel):
+    package: float
+    role: str
+    location: str = ""
+    joining_date: Optional[str] = None
+    bond: Optional[str] = None
+    benefits: Optional[str] = None
+
+
+class OfferDecision(BaseModel):
+    status: str  # accepted / declined
+
+
+class StaffInput(BaseModel):
+    name: str
+    email: EmailStr
+    password: str = Field(min_length=6)
+    admin_role: str
+
+
+# ------------------------------------------------------------------ auth
 def issue_token_response(user: dict, response: Response) -> dict:
     token = create_access_token(user["id"], user["role"])
     response.set_cookie("access_token", token, httponly=True, secure=True,
@@ -171,23 +358,34 @@ async def register(body: RegisterInput, response: Response):
     if await db.users.find_one({"email": email}):
         raise HTTPException(status_code=400, detail="An account with this email already exists.")
     doc = {
-        "id": str(uuid.uuid4()),
-        "name": body.name.strip(),
-        "email": email,
-        "password_hash": hash_password(body.password),
-        "role": role,
-        "created_at": now_utc().isoformat(),
-        "profile_complete": False,
+        "id": str(uuid.uuid4()), "name": body.name.strip(), "email": email,
+        "password_hash": hash_password(body.password), "role": role,
+        "created_at": now_iso(), "profile_complete": False,
     }
     if role == "company":
-        doc["company_name"] = (body.company_name or body.name).strip()
-        doc["industry"] = None
-        doc["website"] = None
-        doc["verified"] = False
+        doc.update({
+            "company_name": (body.company_name or body.name).strip(),
+            "industry": None, "website": None,
+            "approval_status": "pending", "approval_remarks": None, "verified": False,
+        })
+        await db.users.insert_one(doc)
+        await notify_admins("recruiter_request", "New recruiter registration",
+                            f"{doc['company_name']} has requested to join as a recruiter.", "/app/companies")
     else:
-        doc["skills"] = []
-        doc["branch"] = None
-    await db.users.insert_one(doc)
+        doc.update({
+            "skills": [], "projects": [], "certificates": [], "branch": None, "department": None,
+            "backlogs": 0, "documents": {},
+            "verification_status": "pending", "verification_remarks": None,
+            "verification_date": None, "verified_by": None,
+            "frozen": False, "freeze_reason": None,
+            "placed": False, "placed_company": None, "placed_package": None,
+            "profile_score": None,
+        })
+        await db.users.insert_one(doc)
+        await notify_admins("student_registration", "New student registration",
+                            f"{doc['name']} has registered and is awaiting verification.", "/app/students")
+        await notify(doc["id"], "verification", "Welcome to PlacementHub",
+                     "Your account is pending verification. Complete your profile and upload documents to get verified.")
     return issue_token_response(doc, response)
 
 
@@ -202,6 +400,8 @@ async def login(body: LoginInput, response: Response):
 
 @api.get("/auth/me")
 async def me(user: dict = Depends(get_current_user)):
+    if user["role"] == "student":
+        user["profile_completion"] = profile_completion(user)
     return user
 
 
@@ -216,10 +416,79 @@ async def logout(response: Response):
 async def update_profile(body: ProfileUpdate, user: dict = Depends(get_current_user)):
     updates = {k: v for k, v in body.model_dump().items() if v is not None}
     if updates:
-        updates["profile_complete"] = True
         await db.users.update_one({"id": user["id"]}, {"$set": updates})
     fresh = await db.users.find_one({"id": user["id"]})
+    fresh = public_user(fresh)
+    comp = profile_completion(fresh)
+    await db.users.update_one({"id": user["id"]}, {"$set": {"profile_complete": comp["percentage"] == 100}})
+    fresh["profile_completion"] = comp
+    return fresh
+
+
+@api.get("/profile/completion")
+async def get_completion(user: dict = Depends(require_roles("student"))):
+    full = await db.users.find_one({"id": user["id"]})
+    return profile_completion(full)
+
+
+# ------------------------------------------------------------------ cloudinary
+@api.get("/cloudinary/signature")
+async def cloudinary_signature(resource_type: str = "image", user: dict = Depends(get_current_user)):
+    folder = f"students/{user['id']}"
+    timestamp = int(time.time())
+    params = {"timestamp": timestamp, "folder": folder}
+    signature = cloudinary.utils.api_sign_request(params, os.environ["CLOUDINARY_API_SECRET"])
+    return {
+        "signature": signature, "timestamp": timestamp,
+        "cloud_name": os.environ["CLOUDINARY_CLOUD_NAME"],
+        "api_key": os.environ["CLOUDINARY_API_KEY"],
+        "folder": folder, "resource_type": resource_type,
+    }
+
+
+@api.post("/documents")
+async def upload_document(body: DocumentInput, user: dict = Depends(require_roles("student"))):
+    if body.doc_type not in DOC_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid document type")
+    entry = {
+        "url": body.url, "public_id": body.public_id, "resource_type": body.resource_type,
+        "format": body.format, "status": "pending", "remarks": None, "uploaded_at": now_iso(),
+    }
+    await db.users.update_one({"id": user["id"]}, {"$set": {f"documents.{body.doc_type}": entry}})
+    await notify_admins("document", "New document uploaded",
+                        f"{user['name']} uploaded {body.doc_type.replace('_', ' ')} for verification.", "/app/students")
+    fresh = await db.users.find_one({"id": user["id"]})
     return public_user(fresh)
+
+
+@api.delete("/documents/{doc_type}")
+async def delete_document(doc_type: str, user: dict = Depends(require_roles("student"))):
+    full = await db.users.find_one({"id": user["id"]})
+    doc = (full.get("documents") or {}).get(doc_type)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        cloudinary.uploader.destroy(doc["public_id"], resource_type=doc.get("resource_type", "image"), invalidate=True)
+    except Exception as e:
+        logger.warning(f"Cloudinary destroy failed: {e}")
+    await db.users.update_one({"id": user["id"]}, {"$unset": {f"documents.{doc_type}": ""}})
+    return {"message": "deleted"}
+
+
+@api.patch("/admin/documents/{student_id}/{doc_type}")
+async def review_document(student_id: str, doc_type: str, body: DocDecision,
+                          admin: dict = Depends(require_perm("verify_documents"))):
+    student = await db.users.find_one({"id": student_id})
+    if not student or not (student.get("documents") or {}).get(doc_type):
+        raise HTTPException(status_code=404, detail="Document not found")
+    await db.users.update_one(
+        {"id": student_id},
+        {"$set": {f"documents.{doc_type}.status": body.status, f"documents.{doc_type}.remarks": body.remarks}},
+    )
+    await notify(student_id, "document", f"Document {body.status}",
+                 f"Your {doc_type.replace('_', ' ')} was marked as {body.status}." + (f" Remark: {body.remarks}" if body.remarks else ""))
+    await audit(admin, f"document_{body.status}", student_id, student.get("name"), f"{doc_type}: {body.remarks or ''}")
+    return {"message": "updated"}
 
 
 # ------------------------------------------------------------------ jobs
@@ -237,40 +506,32 @@ async def enrich_job(job: dict) -> dict:
 
 @api.post("/jobs")
 async def create_job(body: JobInput, user: dict = Depends(require_roles("company", "admin"))):
+    if user["role"] == "company":
+        full = await db.users.find_one({"id": user["id"]})
+        if full.get("approval_status") != "approved":
+            raise HTTPException(status_code=403, detail="Your recruiter account is pending admin approval. You cannot post jobs yet.")
     doc = body.model_dump()
-    doc.update({
-        "id": str(uuid.uuid4()),
-        "company_id": user["id"],
-        "status": "active",   # visible immediately; admin can moderate
-        "featured": False,
-        "created_at": now_utc().isoformat(),
-    })
+    doc.update({"id": str(uuid.uuid4()), "company_id": user["id"], "status": "active",
+                "featured": False, "created_at": now_iso()})
     await db.jobs.insert_one(doc)
     return await enrich_job(doc)
 
 
 @api.get("/jobs")
-async def list_jobs(
-    request: Request,
-    search: Optional[str] = None,
-    role_type: Optional[str] = None,
-    mine: bool = False,
-):
+async def list_jobs(request: Request, search: Optional[str] = None,
+                    role_type: Optional[str] = None, mine: bool = False):
     query = {}
-    # optional auth (public browsing allowed)
     user = None
     try:
         user = await get_current_user(request)
     except HTTPException:
         pass
-
     if mine and user and user["role"] == "company":
         query["company_id"] = user["id"]
     elif user and user["role"] == "admin":
-        pass  # admin sees all
+        pass
     else:
         query["status"] = "active"
-
     if role_type and role_type != "all":
         query["role_type"] = role_type
     if search:
@@ -282,12 +543,15 @@ async def list_jobs(
         ]
     jobs = await db.jobs.find(query).sort("created_at", -1).to_list(500)
     enriched = [await enrich_job(j) for j in jobs]
-    # mark applied for students
     if user and user["role"] == "student":
+        full = await db.users.find_one({"id": user["id"]})
         apps = await db.applications.find({"student_id": user["id"]}).to_list(1000)
         applied_ids = {a["job_id"] for a in apps}
-        for j in enriched:
+        for j, orig in zip(enriched, jobs):
             j["already_applied"] = j["id"] in applied_ids
+            elig = eligibility_check(full, orig)
+            j["eligible"] = elig["eligible"]
+            j["eligibility_reasons"] = elig["reasons"]
     return enriched
 
 
@@ -297,6 +561,22 @@ async def get_job(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return await enrich_job(job)
+
+
+@api.get("/jobs/{job_id}/eligibility")
+async def job_eligibility(job_id: str, user: dict = Depends(require_roles("student"))):
+    job = await db.jobs.find_one({"id": job_id})
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    full = await db.users.find_one({"id": user["id"]})
+    result = eligibility_check(full, job)
+    # add gating info
+    result["verified"] = full.get("verification_status") == "approved"
+    result["frozen"] = full.get("frozen") and full.get("freeze_reason") != "Already Placed"
+    result["freeze_reason"] = full.get("freeze_reason")
+    result["profile"] = mandatory_profile_ok(full)
+    result["placed"] = full.get("placed", False)
+    return result
 
 
 @api.put("/jobs/{job_id}")
@@ -319,6 +599,8 @@ async def set_job_status(job_id: str, body: StatusUpdate, user: dict = Depends(r
     if user["role"] != "admin" and job["company_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Not your job posting.")
     await db.jobs.update_one({"id": job_id}, {"$set": {"status": body.status}})
+    if user["role"] == "admin":
+        await audit(user, f"job_{body.status}", job.get("company_id"), job.get("title"))
     return {"message": "updated"}
 
 
@@ -329,8 +611,12 @@ async def delete_job(job_id: str, user: dict = Depends(require_roles("company", 
         raise HTTPException(status_code=404, detail="Job not found")
     if user["role"] != "admin" and job["company_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Not your job posting.")
+    if user["role"] == "admin" and user.get("admin_role") not in PERMISSIONS["moderate_jobs"]:
+        raise HTTPException(status_code=403, detail="You cannot delete jobs.")
     await db.jobs.delete_one({"id": job_id})
     await db.applications.delete_many({"job_id": job_id})
+    if user["role"] == "admin":
+        await audit(user, "job_deleted", job.get("company_id"), job.get("title"))
     return {"message": "deleted"}
 
 
@@ -340,19 +626,34 @@ async def apply_job(job_id: str, user: dict = Depends(require_roles("student")))
     job = await db.jobs.find_one({"id": job_id})
     if not job or job.get("status") != "active":
         raise HTTPException(status_code=404, detail="Job not available")
+    full = await db.users.find_one({"id": user["id"]})
+
+    if full.get("verification_status") != "approved":
+        raise HTTPException(status_code=403, detail="Your profile is not verified yet. Please wait for admin approval.")
+    prof = mandatory_profile_ok(full)
+    if not prof["ok"]:
+        raise HTTPException(status_code=403, detail=f"Complete your profile first. Missing: {', '.join(prof['missing'])}.")
+    if full.get("frozen") and full.get("freeze_reason") != "Already Placed":
+        raise HTTPException(status_code=403, detail=f"Your account is frozen ({full.get('freeze_reason')}). You cannot apply.")
+    if full.get("placed"):
+        pkg = full.get("placed_package") or 0
+        if not (job.get("is_dream_company") and (job.get("ctc_max") or 0) > pkg):
+            raise HTTPException(status_code=403, detail="You are already placed. Only higher-package Dream Company drives are allowed.")
+    elig = eligibility_check(full, job)
+    if not elig["eligible"]:
+        raise HTTPException(status_code=403, detail="You are not eligible: " + "; ".join(elig["reasons"]))
     if await db.applications.find_one({"job_id": job_id, "student_id": user["id"]}):
         raise HTTPException(status_code=400, detail="You have already applied to this job.")
-    ts = now_utc().isoformat()
-    doc = {
-        "id": str(uuid.uuid4()),
-        "job_id": job_id,
-        "company_id": job["company_id"],
-        "student_id": user["id"],
-        "status": "applied",
-        "created_at": ts,
-        "timeline": [{"status": "applied", "at": ts, "note": "Application submitted"}],
-    }
+
+    ts = now_iso()
+    doc = {"id": str(uuid.uuid4()), "job_id": job_id, "company_id": job["company_id"],
+           "student_id": user["id"], "status": "applied", "created_at": ts,
+           "timeline": [{"status": "applied", "at": ts, "note": "Application submitted"}]}
     await db.applications.insert_one(doc)
+    await notify(job["company_id"], "application", "New application",
+                 f"{full['name']} applied to {job['title']}.", "/app/applicants")
+    await notify(user["id"], "application", "Application submitted",
+                 f"You applied to {job['title']}. Good luck!", "/app/applications")
     doc.pop("_id", None)
     return doc
 
@@ -403,70 +704,404 @@ async def update_application_status(app_id: str, body: StatusUpdate, user: dict 
         raise HTTPException(status_code=404, detail="Application not found")
     if user["role"] != "admin" and app_doc["company_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Not your applicant.")
-    entry = {"status": body.status, "at": now_utc().isoformat(), "note": body.note or f"Marked as {body.status}"}
-    await db.applications.update_one(
-        {"id": app_id},
-        {"$set": {"status": body.status}, "$push": {"timeline": entry}},
-    )
+    entry = {"status": body.status, "at": now_iso(), "note": body.note or f"Marked as {body.status}"}
+    await db.applications.update_one({"id": app_id}, {"$set": {"status": body.status}, "$push": {"timeline": entry}})
+
+    job = await db.jobs.find_one({"id": app_doc["job_id"]})
+    await notify(app_doc["student_id"], "application", "Application update",
+                 f"Your application for {job['title'] if job else 'a job'} is now: {body.status.replace('_', ' ')}.",
+                 "/app/applications")
+
+    # auto-create offer on selection
+    if body.status == "selected" and not await db.offers.find_one({"application_id": app_id}):
+        offer = {
+            "id": str(uuid.uuid4()), "application_id": app_id, "job_id": app_doc["job_id"],
+            "company_id": app_doc["company_id"], "student_id": app_doc["student_id"],
+            "package": job.get("ctc_max") or job.get("ctc_min") or 0,
+            "role": job.get("title"), "location": job.get("location"),
+            "joining_date": None, "bond": None, "benefits": None,
+            "status": "offered", "created_at": now_iso(),
+        }
+        await db.offers.insert_one(offer)
+        await notify(app_doc["student_id"], "offer", "🎉 You received an offer!",
+                     f"{job.get('title')} — review and respond in Offers.", "/app/offers")
     fresh = await db.applications.find_one({"id": app_id})
     return await enrich_application(fresh, include_student=True)
 
 
-# ------------------------------------------------------------------ analytics
-@api.get("/company/stats")
-async def company_stats(user: dict = Depends(require_roles("company"))):
-    job_ids = [j["id"] for j in await db.jobs.find({"company_id": user["id"]}).to_list(500)]
-    total_jobs = len(job_ids)
-    active_jobs = await db.jobs.count_documents({"company_id": user["id"], "status": "active"})
-    total_apps = await db.applications.count_documents({"company_id": user["id"]})
-    hired = await db.applications.count_documents({"company_id": user["id"], "status": "selected"})
-    shortlisted = await db.applications.count_documents({"company_id": user["id"], "status": "shortlisted"})
-    # status distribution
-    dist = {}
-    for s in APPLICATION_STATUSES:
-        dist[s] = await db.applications.count_documents({"company_id": user["id"], "status": s})
-    return {
-        "total_jobs": total_jobs,
-        "active_jobs": active_jobs,
-        "total_applications": total_apps,
-        "hired": hired,
-        "shortlisted": shortlisted,
-        "status_distribution": [{"status": k, "count": v} for k, v in dist.items()],
-    }
+# ------------------------------------------------------------------ offers
+async def enrich_offer(o: dict) -> dict:
+    o = dict(o)
+    o.pop("_id", None)
+    company = await db.users.find_one({"id": o["company_id"]})
+    if company:
+        o["company_name"] = company.get("company_name") or company.get("name")
+    return o
+
+
+@api.get("/offers/me")
+async def my_offers(user: dict = Depends(require_roles("student"))):
+    offers = await db.offers.find({"student_id": user["id"]}).sort("created_at", -1).to_list(200)
+    return [await enrich_offer(o) for o in offers]
+
+
+@api.patch("/offers/{offer_id}")
+async def respond_offer(offer_id: str, body: OfferDecision, user: dict = Depends(require_roles("student"))):
+    offer = await db.offers.find_one({"id": offer_id, "student_id": user["id"]})
+    if not offer:
+        raise HTTPException(status_code=404, detail="Offer not found")
+    full = await db.users.find_one({"id": user["id"]})
+    if body.status == "accepted":
+        if full.get("frozen") and full.get("freeze_reason") != "Already Placed":
+            raise HTTPException(status_code=403, detail=f"Account frozen ({full.get('freeze_reason')}). Cannot accept offers.")
+        await db.offers.update_one({"id": offer_id}, {"$set": {"status": "accepted"}})
+        # decline other pending offers
+        await db.offers.update_many(
+            {"student_id": user["id"], "id": {"$ne": offer_id}, "status": "offered"},
+            {"$set": {"status": "declined"}})
+        # placement policy: mark placed + freeze
+        await db.users.update_one({"id": user["id"]}, {"$set": {
+            "placed": True, "placed_company": offer.get("company_name") or None,
+            "placed_package": offer.get("package"),
+            "frozen": True, "freeze_reason": "Already Placed",
+        }})
+        # timeline on application
+        await db.applications.update_one(
+            {"id": offer["application_id"]},
+            {"$push": {"timeline": {"status": "offer_accepted", "at": now_iso(), "note": "Offer accepted — Placed"}}})
+        await notify(offer["company_id"], "offer", "Offer accepted",
+                     f"{full['name']} accepted your offer for {offer.get('role')}.", "/app/applicants")
+    else:
+        await db.offers.update_one({"id": offer_id}, {"$set": {"status": "declined"}})
+        await notify(offer["company_id"], "offer", "Offer declined",
+                     f"{full['name']} declined the offer for {offer.get('role')}.", "/app/applicants")
+    fresh = await db.offers.find_one({"id": offer_id})
+    return await enrich_offer(fresh)
+
+
+# ------------------------------------------------------------------ notifications
+@api.get("/notifications")
+async def get_notifications(user: dict = Depends(get_current_user)):
+    items = await db.notifications.find({"user_id": user["id"]}).sort("created_at", -1).to_list(100)
+    for i in items:
+        i.pop("_id", None)
+    unread = await db.notifications.count_documents({"user_id": user["id"], "read": False})
+    return {"items": items, "unread": unread}
+
+
+@api.patch("/notifications/{nid}/read")
+async def read_notification(nid: str, user: dict = Depends(get_current_user)):
+    await db.notifications.update_one({"id": nid, "user_id": user["id"]}, {"$set": {"read": True}})
+    return {"message": "ok"}
+
+
+@api.patch("/notifications/read-all")
+async def read_all(user: dict = Depends(get_current_user)):
+    await db.notifications.update_many({"user_id": user["id"]}, {"$set": {"read": True}})
+    return {"message": "ok"}
+
+
+# ------------------------------------------------------------------ student timeline & stats
+@api.get("/student/timeline")
+async def student_timeline(user: dict = Depends(require_roles("student"))):
+    full = await db.users.find_one({"id": user["id"]})
+    apps = await db.applications.find({"student_id": user["id"]}).to_list(1000)
+    statuses = {a["status"] for a in apps}
+    offers = await db.offers.find({"student_id": user["id"]}).to_list(200)
+    accepted = any(o["status"] == "accepted" for o in offers)
+    prof = mandatory_profile_ok(full)
+    stages = [
+        {"key": "registration", "label": "Registration", "done": True, "date": full.get("created_at")},
+        {"key": "verification", "label": "Verification", "done": full.get("verification_status") == "approved", "date": full.get("verification_date")},
+        {"key": "eligible", "label": "Eligible to Apply", "done": full.get("verification_status") == "approved" and prof["ok"]},
+        {"key": "applied", "label": "Applied", "done": len(apps) > 0},
+        {"key": "shortlisted", "label": "Shortlisted", "done": bool(statuses & {"shortlisted", "interview", "selected"})},
+        {"key": "interview", "label": "Interview", "done": bool(statuses & {"interview", "selected"})},
+        {"key": "selected", "label": "Selected", "done": "selected" in statuses},
+        {"key": "offer_accepted", "label": "Offer Accepted", "done": accepted},
+        {"key": "placed", "label": "Placed", "done": full.get("placed", False)},
+    ]
+    return stages
 
 
 @api.get("/student/stats")
 async def student_stats(user: dict = Depends(require_roles("student"))):
+    full = await db.users.find_one({"id": user["id"]})
     apps = await db.applications.find({"student_id": user["id"]}).to_list(1000)
-    total = len(apps)
     counts = {s: 0 for s in APPLICATION_STATUSES}
     for a in apps:
         counts[a["status"]] = counts.get(a["status"], 0) + 1
     active_jobs = await db.jobs.count_documents({"status": "active"})
+    offers = await db.offers.count_documents({"student_id": user["id"]})
     return {
-        "total_applications": total,
+        "total_applications": len(apps),
         "shortlisted": counts["shortlisted"] + counts["interview"],
         "selected": counts["selected"],
         "open_jobs": active_jobs,
+        "offers": offers,
+        "verification_status": full.get("verification_status"),
+        "frozen": full.get("frozen", False),
+        "freeze_reason": full.get("freeze_reason"),
+        "placed": full.get("placed", False),
+        "profile_completion": profile_completion(full),
         "status_distribution": [{"status": k, "count": v} for k, v in counts.items()],
     }
 
 
+# ------------------------------------------------------------------ company stats
+@api.get("/company/stats")
+async def company_stats(user: dict = Depends(require_roles("company"))):
+    active_jobs = await db.jobs.count_documents({"company_id": user["id"], "status": "active"})
+    total_jobs = await db.jobs.count_documents({"company_id": user["id"]})
+    total_apps = await db.applications.count_documents({"company_id": user["id"]})
+    hired = await db.applications.count_documents({"company_id": user["id"], "status": "selected"})
+    shortlisted = await db.applications.count_documents({"company_id": user["id"], "status": "shortlisted"})
+    dist = {}
+    for s in APPLICATION_STATUSES:
+        dist[s] = await db.applications.count_documents({"company_id": user["id"], "status": s})
+    full = await db.users.find_one({"id": user["id"]})
+    return {
+        "total_jobs": total_jobs, "active_jobs": active_jobs, "total_applications": total_apps,
+        "hired": hired, "shortlisted": shortlisted,
+        "approval_status": full.get("approval_status", "approved"),
+        "status_distribution": [{"status": k, "count": v} for k, v in dist.items()],
+    }
+
+
+# ------------------------------------------------------------------ admin: verification / freeze / approval
+@api.patch("/admin/students/{sid}/verification")
+async def verify_student(sid: str, body: VerificationDecision, admin: dict = Depends(require_perm("verify_students"))):
+    student = await db.users.find_one({"id": sid, "role": "student"})
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    if body.status not in {"approved", "rejected", "changes_requested"}:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    await db.users.update_one({"id": sid}, {"$set": {
+        "verification_status": body.status, "verification_remarks": body.remarks,
+        "verification_date": now_iso(), "verified_by": admin["name"],
+    }})
+    label = {"approved": "approved", "rejected": "rejected", "changes_requested": "returned for changes"}[body.status]
+    await notify(sid, "verification", f"Verification {label}",
+                 f"Your profile was {label} by the placement cell." + (f" Remark: {body.remarks}" if body.remarks else ""))
+    await audit(admin, f"student_{body.status}", sid, student.get("name"), body.remarks)
+    return {"message": "updated"}
+
+
+@api.patch("/admin/students/{sid}/freeze")
+async def freeze_student(sid: str, body: FreezeInput, admin: dict = Depends(require_perm("freeze_students"))):
+    student = await db.users.find_one({"id": sid, "role": "student"})
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    await db.users.update_one({"id": sid}, {"$set": {
+        "frozen": body.frozen, "freeze_reason": body.reason if body.frozen else None}})
+    if body.frozen:
+        await notify(sid, "freeze", "Account frozen",
+                     f"Your account has been frozen. Reason: {body.reason}. You cannot apply or accept offers.")
+        await audit(admin, "freeze_student", sid, student.get("name"), body.reason)
+    else:
+        await notify(sid, "freeze", "Account unfrozen", "Your account has been unfrozen. You can apply again.")
+        await audit(admin, "unfreeze_student", sid, student.get("name"))
+    return {"message": "updated"}
+
+
+@api.patch("/admin/companies/{cid}/approval")
+async def approve_company(cid: str, body: VerificationDecision, admin: dict = Depends(require_perm("approve_recruiters"))):
+    company = await db.users.find_one({"id": cid, "role": "company"})
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    if body.status not in {"approved", "rejected", "pending"}:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    await db.users.update_one({"id": cid}, {"$set": {
+        "approval_status": body.status, "approval_remarks": body.remarks,
+        "verified": body.status == "approved"}})
+    await notify(cid, "approval", f"Recruiter account {body.status}",
+                 f"Your recruiter account was {body.status} by the placement cell." + (f" Remark: {body.remarks}" if body.remarks else ""))
+    await audit(admin, f"recruiter_{body.status}", cid, company.get("company_name"), body.remarks)
+    return {"message": "updated"}
+
+
+# ------------------------------------------------------------------ admin: users & filters
+@api.get("/admin/students")
+async def admin_students(
+    admin: dict = Depends(require_perm("manage_students")),
+    verification: Optional[str] = None, frozen: Optional[bool] = None, placed: Optional[bool] = None,
+    applied: Optional[bool] = None, department: Optional[str] = None, section: Optional[str] = None,
+    year: Optional[int] = None, cgpa_min: Optional[float] = None, cgpa_max: Optional[float] = None,
+    resume_uploaded: Optional[bool] = None, missing_documents: Optional[bool] = None,
+    email_domain: Optional[str] = None, search: Optional[str] = None,
+):
+    q: Dict[str, Any] = {"role": "student"}
+    if verification:
+        q["verification_status"] = verification
+    if frozen is not None:
+        q["frozen"] = frozen
+    if placed is not None:
+        q["placed"] = placed
+    if department:
+        q["department"] = department
+    if section:
+        q["section"] = section
+    if year:
+        q["graduation_year"] = year
+    if cgpa_min is not None or cgpa_max is not None:
+        q["cgpa"] = {}
+        if cgpa_min is not None:
+            q["cgpa"]["$gte"] = cgpa_min
+        if cgpa_max is not None:
+            q["cgpa"]["$lte"] = cgpa_max
+    if resume_uploaded is True:
+        q["documents.resume"] = {"$exists": True}
+    if email_domain:
+        q["email"] = {"$regex": f"{email_domain}$", "$options": "i"}
+    if search:
+        q["$or"] = [{"name": {"$regex": search, "$options": "i"}},
+                    {"email": {"$regex": search, "$options": "i"}}]
+
+    students = await db.users.find(q).sort("created_at", -1).to_list(3000)
+    result = []
+    for s in students:
+        pu = public_user(s)
+        pu["applications_count"] = await db.applications.count_documents({"student_id": s["id"]})
+        pu["profile_completion"] = profile_completion(s)
+        docs = s.get("documents", {}) or {}
+        pu["missing_docs"] = [d for d in MANDATORY_DOCS if not docs.get(d)]
+        result.append(pu)
+
+    if applied is not None:
+        result = [r for r in result if (r["applications_count"] > 0) == applied]
+    if missing_documents is True:
+        result = [r for r in result if r["missing_docs"]]
+    return result
+
+
+@api.get("/admin/companies")
+async def admin_companies(admin: dict = Depends(require_perm("manage_students")), approval: Optional[str] = None):
+    q = {"role": "company"}
+    if approval:
+        q["approval_status"] = approval
+    companies = await db.users.find(q).sort("created_at", -1).to_list(2000)
+    result = []
+    for c in companies:
+        pu = public_user(c)
+        pu["jobs_count"] = await db.jobs.count_documents({"company_id": c["id"]})
+        result.append(pu)
+    return result
+
+
+@api.get("/admin/users")
+async def admin_users(role: Optional[str] = None, admin: dict = Depends(require_perm("manage_students"))):
+    q = {}
+    if role:
+        q["role"] = role
+    users = await db.users.find(q).sort("created_at", -1).to_list(3000)
+    out = []
+    for u in users:
+        pu = public_user(u)
+        if u["role"] == "student":
+            pu["applications_count"] = await db.applications.count_documents({"student_id": u["id"]})
+        if u["role"] == "company":
+            pu["jobs_count"] = await db.jobs.count_documents({"company_id": u["id"]})
+        out.append(pu)
+    return out
+
+
+@api.get("/admin/students/{sid}")
+async def admin_student_detail(sid: str, admin: dict = Depends(require_perm("manage_students"))):
+    s = await db.users.find_one({"id": sid, "role": "student"})
+    if not s:
+        raise HTTPException(status_code=404, detail="Student not found")
+    pu = public_user(s)
+    pu["profile_completion"] = profile_completion(s)
+    pu["applications"] = [await enrich_application(a) for a in
+                          await db.applications.find({"student_id": sid}).to_list(500)]
+    return pu
+
+
+@api.delete("/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, admin: dict = Depends(require_perm("delete_users"))):
+    target = await db.users.find_one({"id": user_id})
+    if not target or target["role"] == "admin":
+        raise HTTPException(status_code=400, detail="Cannot delete this user.")
+    await db.users.delete_one({"id": user_id})
+    await db.jobs.delete_many({"company_id": user_id})
+    await db.applications.delete_many({"$or": [{"student_id": user_id}, {"company_id": user_id}]})
+    await audit(admin, "user_deleted", user_id, target.get("name"))
+    return {"message": "deleted"}
+
+
+# ------------------------------------------------------------------ staff (RBAC)
+@api.post("/admin/staff")
+async def create_staff(body: StaffInput, admin: dict = Depends(require_perm("manage_staff"))):
+    if body.admin_role not in ADMIN_ROLES:
+        raise HTTPException(status_code=400, detail="Invalid admin role")
+    email = body.email.lower().strip()
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail="Email already in use")
+    doc = {"id": str(uuid.uuid4()), "name": body.name, "email": email,
+           "password_hash": hash_password(body.password), "role": "admin",
+           "admin_role": body.admin_role, "created_at": now_iso(), "profile_complete": True}
+    await db.users.insert_one(doc)
+    await audit(admin, "staff_created", doc["id"], body.name, body.admin_role)
+    return public_user(doc)
+
+
+@api.get("/admin/staff")
+async def list_staff(admin: dict = Depends(require_perm("manage_staff"))):
+    staff = await db.users.find({"role": "admin"}).to_list(200)
+    return [public_user(s) for s in staff]
+
+
+# ------------------------------------------------------------------ audit
+@api.get("/admin/audit")
+async def get_audit(admin: dict = Depends(require_perm("view_audit"))):
+    logs = await db.audit_logs.find().sort("created_at", -1).to_list(500)
+    for l in logs:
+        l.pop("_id", None)
+    return logs
+
+
+# ------------------------------------------------------------------ admin dashboard
 @api.get("/admin/stats")
-async def admin_stats(user: dict = Depends(require_roles("admin"))):
+async def admin_stats(admin: dict = Depends(require_perm("view_dashboard"))):
     total_students = await db.users.count_documents({"role": "student"})
     total_companies = await db.users.count_documents({"role": "company"})
     total_jobs = await db.jobs.count_documents({})
     total_apps = await db.applications.count_documents({})
-    placed = await db.applications.count_documents({"status": "selected"})
+    placed = await db.users.count_documents({"role": "student", "placed": True})
     placement_rate = round((placed / total_students * 100), 1) if total_students else 0
 
-    # status distribution
-    status_dist = []
-    for s in APPLICATION_STATUSES:
-        status_dist.append({"status": s, "count": await db.applications.count_documents({"status": s})})
+    awaiting_verification = await db.users.count_documents({"role": "student", "verification_status": "pending"})
+    awaiting_recruiter = await db.users.count_documents({"role": "company", "approval_status": "pending"})
 
-    # top companies by applications
+    # pending documents count
+    pending_docs = 0
+    students = await db.users.find({"role": "student"}).to_list(3000)
+    packages = []
+    dept_map: Dict[str, Dict[str, int]] = {}
+    branch_map: Dict[str, Dict[str, int]] = {}
+    for s in students:
+        for d in (s.get("documents") or {}).values():
+            if d.get("status") == "pending":
+                pending_docs += 1
+        if s.get("placed") and s.get("placed_package"):
+            packages.append(s["placed_package"])
+        dept = s.get("department") or s.get("branch") or "Unassigned"
+        dept_map.setdefault(dept, {"total": 0, "placed": 0})
+        dept_map[dept]["total"] += 1
+        if s.get("placed"):
+            dept_map[dept]["placed"] += 1
+        br = s.get("branch") or "Unassigned"
+        branch_map.setdefault(br, {"total": 0, "placed": 0})
+        branch_map[br]["total"] += 1
+        if s.get("placed"):
+            branch_map[br]["placed"] += 1
+
+    highest_package = max(packages) if packages else 0
+    avg_package = round(sum(packages) / len(packages), 2) if packages else 0
+
+    status_dist = [{"status": s, "count": await db.applications.count_documents({"status": s})}
+                   for s in APPLICATION_STATUSES]
+
     pipeline = [{"$group": {"_id": "$company_id", "count": {"$sum": 1}}},
                 {"$sort": {"count": -1}}, {"$limit": 6}]
     top = await db.applications.aggregate(pipeline).to_list(6)
@@ -476,60 +1111,114 @@ async def admin_stats(user: dict = Depends(require_roles("admin"))):
         if c:
             top_companies.append({"name": c.get("company_name") or c.get("name"), "applications": t["count"]})
 
-    # applications trend (last 6 months)
     trend = []
     now = now_utc()
-    for i in range(5, -1, -1):
-        month_start = (now.replace(day=1) - timedelta(days=30 * i)).replace(day=1)
-        next_month = (month_start + timedelta(days=32)).replace(day=1)
-        cnt = await db.applications.count_documents({
-            "created_at": {"$gte": month_start.isoformat(), "$lt": next_month.isoformat()}
-        })
-        placed_cnt = await db.applications.count_documents({
-            "status": "selected",
-            "created_at": {"$gte": month_start.isoformat(), "$lt": next_month.isoformat()}
-        })
-        trend.append({"month": month_start.strftime("%b"), "applications": cnt, "placed": placed_cnt})
+    cursor = now.replace(day=1)
+    months = []
+    for _ in range(6):
+        months.append(cursor)
+        cursor = (cursor - timedelta(days=1)).replace(day=1)
+    for m in reversed(months):
+        nm = (m + timedelta(days=32)).replace(day=1)
+        cnt = await db.applications.count_documents({"created_at": {"$gte": m.isoformat(), "$lt": nm.isoformat()}})
+        pl = await db.applications.count_documents({"status": "selected", "created_at": {"$gte": m.isoformat(), "$lt": nm.isoformat()}})
+        trend.append({"month": m.strftime("%b"), "applications": cnt, "placed": pl})
 
     return {
-        "total_students": total_students,
-        "total_companies": total_companies,
-        "total_jobs": total_jobs,
-        "total_applications": total_apps,
-        "placed": placed,
-        "placement_rate": placement_rate,
-        "status_distribution": status_dist,
-        "top_companies": top_companies,
-        "trend": trend,
+        "total_students": total_students, "total_companies": total_companies,
+        "total_jobs": total_jobs, "total_applications": total_apps,
+        "placed": placed, "placement_rate": placement_rate,
+        "awaiting_verification": awaiting_verification, "awaiting_recruiter_approval": awaiting_recruiter,
+        "pending_documents": pending_docs, "highest_package": highest_package, "avg_package": avg_package,
+        "status_distribution": status_dist, "top_companies": top_companies, "trend": trend,
+        "dept_wise": [{"name": k, **v} for k, v in dept_map.items()],
+        "branch_wise": [{"name": k, **v} for k, v in branch_map.items()],
     }
 
 
-@api.get("/admin/users")
-async def admin_users(role: Optional[str] = None, user: dict = Depends(require_roles("admin"))):
-    query = {}
-    if role and role in ROLES:
-        query["role"] = role
-    users = await db.users.find(query).sort("created_at", -1).to_list(2000)
-    result = []
-    for u in users:
-        pu = public_user(u)
-        if u["role"] == "student":
-            pu["applications_count"] = await db.applications.count_documents({"student_id": u["id"]})
-        if u["role"] == "company":
-            pu["jobs_count"] = await db.jobs.count_documents({"company_id": u["id"]})
-        result.append(pu)
-    return result
+# ------------------------------------------------------------------ AI (Claude)
+async def call_claude(system: str, prompt: str) -> str:
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=str(uuid.uuid4()),
+                   system_message=system).with_model("anthropic", "claude-sonnet-4-6")
+    resp = await chat.send_message(UserMessage(text=prompt))
+    return resp if isinstance(resp, str) else str(resp)
 
 
-@api.delete("/admin/users/{user_id}")
-async def admin_delete_user(user_id: str, user: dict = Depends(require_roles("admin"))):
-    target = await db.users.find_one({"id": user_id})
-    if not target or target["role"] == "admin":
-        raise HTTPException(status_code=400, detail="Cannot delete this user.")
-    await db.users.delete_one({"id": user_id})
-    await db.jobs.delete_many({"company_id": user_id})
-    await db.applications.delete_many({"$or": [{"student_id": user_id}, {"company_id": user_id}]})
-    return {"message": "deleted"}
+def parse_json(text: str):
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("```", 2)[1]
+        if text.startswith("json"):
+            text = text[4:]
+    start, end = text.find("{"), text.rfind("}")
+    if start != -1 and end != -1:
+        text = text[start:end + 1]
+    return json.loads(text)
+
+
+@api.post("/student/ai-review")
+async def ai_review(user: dict = Depends(require_roles("student"))):
+    full = await db.users.find_one({"id": user["id"]})
+    docs = full.get("documents", {}) or {}
+    profile = {
+        "name": full.get("name"), "branch": full.get("branch"), "degree": full.get("degree"),
+        "cgpa": full.get("cgpa"), "skills": full.get("skills"), "projects": full.get("projects"),
+        "certificates": full.get("certificates"), "bio": full.get("bio"),
+        "has_resume": bool(docs.get("resume")), "linkedin": bool(full.get("linkedin")),
+        "github": bool(full.get("github")),
+    }
+    system = ("You are an expert placement mentor. Analyze the student's profile and return ONLY valid JSON "
+              "with keys: overall (0-100 int), resume (0-100), skills (0-100), projects (0-100), "
+              "certificates (0-100), strength_label (one of Weak, Average, Good, Strong, Excellent), "
+              "suggestions (array of 3-5 short actionable strings).")
+    prompt = f"Student profile JSON:\n{json.dumps(profile)}\nReturn the analysis JSON only."
+    try:
+        raw = await call_claude(system, prompt)
+        data = parse_json(raw)
+    except Exception as e:
+        logger.error(f"AI review failed: {e}")
+        raise HTTPException(status_code=502, detail="AI review is temporarily unavailable. Please try again.")
+    data["generated_at"] = now_iso()
+    await db.users.update_one({"id": user["id"]}, {"$set": {"profile_score": data}})
+    return data
+
+
+@api.get("/student/recommendations")
+async def ai_recommendations(user: dict = Depends(require_roles("student"))):
+    full = await db.users.find_one({"id": user["id"]})
+    jobs = await db.jobs.find({"status": "active"}).to_list(200)
+    eligible = []
+    for j in jobs:
+        if eligibility_check(full, j)["eligible"]:
+            eligible.append(j)
+    if not eligible:
+        return {"recommendations": []}
+    job_summ = [{"id": j["id"], "title": j["title"], "skills": j.get("skills", []),
+                 "role_type": j.get("role_type"), "ctc_max": j.get("ctc_max")} for j in eligible[:25]]
+    profile = {"branch": full.get("branch"), "cgpa": full.get("cgpa"),
+               "skills": full.get("skills"), "projects": full.get("projects")}
+    system = ("You are a placement recommendation engine. Given a student profile and a list of eligible jobs, "
+              "rank the best matches. Return ONLY valid JSON: {\"recommendations\": [{\"job_id\": str, "
+              "\"match_score\": int 0-100, \"reason\": short string}]} with at most 6 items, best first.")
+    prompt = f"Student:\n{json.dumps(profile)}\nJobs:\n{json.dumps(job_summ)}\nReturn JSON only."
+    try:
+        raw = await call_claude(system, prompt)
+        data = parse_json(raw)
+        recs = data.get("recommendations", [])
+    except Exception as e:
+        logger.error(f"AI reco failed: {e}")
+        recs = [{"job_id": j["id"], "match_score": 70, "reason": "Matches your eligibility."} for j in eligible[:6]]
+    by_id = {j["id"]: j for j in eligible}
+    out = []
+    for r in recs:
+        j = by_id.get(r.get("job_id"))
+        if j:
+            ej = await enrich_job(j)
+            ej["match_score"] = r.get("match_score", 70)
+            ej["match_reason"] = r.get("reason", "")
+            out.append(ej)
+    return {"recommendations": out}
 
 
 @api.get("/")
@@ -557,6 +1246,8 @@ app.add_middleware(
 async def seed():
     await db.users.create_index("email", unique=True)
     await db.users.create_index("id", unique=True)
+    await db.notifications.create_index("user_id")
+    await db.audit_logs.create_index("created_at")
 
     admin_email = os.environ["ADMIN_EMAIL"].lower()
     admin_password = os.environ["ADMIN_PASSWORD"]
@@ -564,13 +1255,28 @@ async def seed():
     if not existing:
         await db.users.insert_one({
             "id": str(uuid.uuid4()), "name": "Placement Cell Admin", "email": admin_email,
-            "password_hash": hash_password(admin_password), "role": "admin",
-            "created_at": now_utc().isoformat(), "profile_complete": True,
-        })
-    elif not verify_password(admin_password, existing["password_hash"]):
-        await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
+            "password_hash": hash_password(admin_password), "role": "admin", "admin_role": "super_admin",
+            "created_at": now_iso(), "profile_complete": True})
+    else:
+        upd = {}
+        if not verify_password(admin_password, existing["password_hash"]):
+            upd["password_hash"] = hash_password(admin_password)
+        if not existing.get("admin_role"):
+            upd["admin_role"] = "super_admin"
+        if upd:
+            await db.users.update_one({"email": admin_email}, {"$set": upd})
 
-    # demo data only once
+    # staff demo accounts
+    for email, name, arole in [
+        ("officer@placementhub.com", "Placement Officer", "placement_officer"),
+        ("coordinator@placementhub.com", "Dept Coordinator", "department_coordinator"),
+    ]:
+        if not await db.users.find_one({"email": email}):
+            await db.users.insert_one({
+                "id": str(uuid.uuid4()), "name": name, "email": email,
+                "password_hash": hash_password("Staff@123"), "role": "admin",
+                "admin_role": arole, "created_at": now_iso(), "profile_complete": True})
+
     if await db.users.count_documents({"role": "company"}) == 0:
         await seed_demo_data()
 
@@ -590,13 +1296,13 @@ async def seed_demo_data():
             "password_hash": hash_password("Company@123"), "role": "company",
             "company_name": c["company_name"], "industry": c["industry"],
             "website": "https://example.com", "verified": True,
-            "created_at": now_utc().isoformat(), "profile_complete": True,
-        })
+            "approval_status": "approved", "approval_remarks": None,
+            "created_at": now_iso(), "profile_complete": True})
 
     students = [
-        {"name": "Aarav Sharma", "email": "aarav@student.com", "branch": "CSE", "cgpa": 8.7},
-        {"name": "Diya Patel", "email": "diya@student.com", "branch": "IT", "cgpa": 9.1},
-        {"name": "Kabir Singh", "email": "kabir@student.com", "branch": "ECE", "cgpa": 7.9},
+        {"name": "Aarav Sharma", "email": "aarav@student.com", "branch": "CSE", "cgpa": 8.7, "dept": "Computer Science"},
+        {"name": "Diya Patel", "email": "diya@student.com", "branch": "IT", "cgpa": 9.1, "dept": "Information Technology"},
+        {"name": "Kabir Singh", "email": "kabir@student.com", "branch": "ECE", "cgpa": 7.9, "dept": "Electronics"},
     ]
     student_ids = []
     for s in students:
@@ -605,20 +1311,32 @@ async def seed_demo_data():
         await db.users.insert_one({
             "id": sid, "name": s["name"], "email": s["email"],
             "password_hash": hash_password("Student@123"), "role": "student",
-            "branch": s["branch"], "cgpa": s["cgpa"], "degree": "B.Tech",
-            "graduation_year": 2026, "skills": ["Python", "React", "SQL"],
-            "created_at": now_utc().isoformat(), "profile_complete": True,
-        })
+            "branch": s["branch"], "department": s["dept"], "cgpa": s["cgpa"], "degree": "B.Tech",
+            "graduation_year": 2026, "phone": "9000000000", "backlogs": 0, "gender": "Any",
+            "skills": ["Python", "React", "SQL"], "projects": ["Portfolio site"], "certificates": ["AWS CCP"],
+            "documents": {
+                "resume": {"url": "https://res.cloudinary.com/demo/raw/upload/sample.pdf", "public_id": "sample",
+                           "resource_type": "raw", "format": "pdf", "status": "verified", "remarks": None, "uploaded_at": now_iso()},
+                "marksheet_10": {"url": "https://res.cloudinary.com/demo/image/upload/sample.jpg", "public_id": "s10",
+                                 "resource_type": "image", "format": "jpg", "status": "verified", "remarks": None, "uploaded_at": now_iso()},
+                "marksheet_12": {"url": "https://res.cloudinary.com/demo/image/upload/sample.jpg", "public_id": "s12",
+                                 "resource_type": "image", "format": "jpg", "status": "verified", "remarks": None, "uploaded_at": now_iso()},
+            },
+            "verification_status": "approved", "verification_remarks": "Looks good",
+            "verification_date": now_iso(), "verified_by": "Placement Cell Admin",
+            "frozen": False, "freeze_reason": None, "placed": False,
+            "placed_company": None, "placed_package": None, "profile_score": None,
+            "created_at": now_iso(), "profile_complete": True})
 
     jobs = [
         {"title": "Software Engineer", "role_type": "Full-time", "location": "Bengaluru",
-         "ctc_min": 12, "ctc_max": 18, "skills": ["Java", "Spring", "AWS"], "branches": ["CSE", "IT"]},
+         "ctc_min": 12, "ctc_max": 18, "skills": ["Java", "Spring", "AWS"], "branches": ["CSE", "IT"], "is_dream_company": True},
         {"title": "ML Engineer Intern", "role_type": "Internship", "location": "Remote",
-         "ctc_min": 6, "ctc_max": 9, "skills": ["Python", "PyTorch", "NLP"], "branches": ["CSE", "IT", "ECE"]},
+         "ctc_min": 6, "ctc_max": 9, "skills": ["Python", "PyTorch", "NLP"], "branches": ["CSE", "IT", "ECE"], "is_dream_company": False},
         {"title": "Frontend Developer", "role_type": "Full-time", "location": "Pune",
-         "ctc_min": 8, "ctc_max": 14, "skills": ["React", "TypeScript", "CSS"], "branches": ["CSE", "IT"]},
+         "ctc_min": 8, "ctc_max": 14, "skills": ["React", "TypeScript", "CSS"], "branches": ["CSE", "IT"], "is_dream_company": False},
         {"title": "Backend Developer", "role_type": "Full-time", "location": "Hyderabad",
-         "ctc_min": 10, "ctc_max": 16, "skills": ["Node.js", "MongoDB", "Docker"], "branches": ["CSE", "IT"]},
+         "ctc_min": 10, "ctc_max": 16, "skills": ["Node.js", "MongoDB", "Docker"], "branches": ["CSE", "IT"], "is_dream_company": False},
     ]
     import random
     job_ids = []
@@ -626,26 +1344,22 @@ async def seed_demo_data():
         jid = str(uuid.uuid4())
         job_ids.append(jid)
         await db.jobs.insert_one({
-            "id": jid, "company_id": company_ids[i % len(company_ids)],
-            "status": "active", "featured": i == 0,
-            "description": f"We are hiring a {j['title']} to join our growing engineering team. "
-                           f"You will collaborate on high-impact products and modern tech stacks.",
-            "eligibility_cgpa": 7.0, "openings": random.randint(2, 6),
-            "experience": "Fresher", "deadline": None,
-            "created_at": now_utc().isoformat(), **j,
-        })
+            "id": jid, "company_id": company_ids[i % len(company_ids)], "status": "active",
+            "featured": i == 0, "description": f"We are hiring a {j['title']} to join our engineering team.",
+            "eligibility_cgpa": 7.0, "max_backlogs": 0, "departments": [], "passing_year": 2026,
+            "gender": "Any", "degree": "B.Tech", "openings": random.randint(2, 6),
+            "experience": "Fresher", "deadline": None, "created_at": now_iso(), **j})
 
     statuses = ["applied", "under_review", "shortlisted", "selected"]
     for si, sid in enumerate(student_ids):
         for ji, jid in enumerate(job_ids[:3]):
-            ts = now_utc().isoformat()
+            ts = now_iso()
             st = statuses[(si + ji) % len(statuses)]
+            job = await db.jobs.find_one({"id": jid})
             await db.applications.insert_one({
-                "id": str(uuid.uuid4()), "job_id": jid,
-                "company_id": (await db.jobs.find_one({"id": jid}))["company_id"],
+                "id": str(uuid.uuid4()), "job_id": jid, "company_id": job["company_id"],
                 "student_id": sid, "status": st, "created_at": ts,
-                "timeline": [{"status": "applied", "at": ts, "note": "Application submitted"}],
-            })
+                "timeline": [{"status": "applied", "at": ts, "note": "Application submitted"}]})
     logger.info("Demo data seeded.")
 
 

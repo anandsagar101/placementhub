@@ -23,6 +23,7 @@ import bcrypt
 import cloudinary
 import cloudinary.utils
 import cloudinary.uploader
+from services.gemini_service import GeminiService
 
 # ------------------------------------------------------------------ setup
 mongo_url = os.environ['MONGO_URL']
@@ -33,7 +34,7 @@ JWT_SECRET = os.environ['JWT_SECRET']
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_MINUTES = 60 * 24 * 7
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY")
+gemini_service = GeminiService()
 
 cloudinary.config(
     cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
@@ -1162,13 +1163,9 @@ async def admin_stats(admin: dict = Depends(require_perm("view_dashboard"))):
     }
 
 
-# ------------------------------------------------------------------ AI (Claude)
-async def call_claude(system: str, prompt: str) -> str:
-    from emergentintegrations.llm.chat import LlmChat, UserMessage
-    chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=str(uuid.uuid4()),
-                   system_message=system).with_model("anthropic", "claude-sonnet-4-6")
-    resp = await chat.send_message(UserMessage(text=prompt))
-    return resp if isinstance(resp, str) else str(resp)
+# ------------------------------------------------------------------ AI (Google Gemini)
+async def generate_ai_text(system: str, prompt: str, *, json_response: bool = False) -> str:
+    return await gemini_service.generate_text(system, prompt, json_response=json_response)
 
 
 def parse_json(text: str):
@@ -1200,7 +1197,7 @@ async def ai_review(user: dict = Depends(require_roles("student"))):
               "suggestions (array of 3-5 short actionable strings).")
     prompt = f"Student profile JSON:\n{json.dumps(profile)}\nReturn the analysis JSON only."
     try:
-        raw = await call_claude(system, prompt)
+        raw = await generate_ai_text(system, prompt, json_response=True)
         data = parse_json(raw)
     except Exception as e:
         logger.error(f"AI review failed: {e}")
@@ -1229,7 +1226,7 @@ async def ai_recommendations(user: dict = Depends(require_roles("student"))):
               "\"match_score\": int 0-100, \"reason\": short string}]} with at most 6 items, best first.")
     prompt = f"Student:\n{json.dumps(profile)}\nJobs:\n{json.dumps(job_summ)}\nReturn JSON only."
     try:
-        raw = await call_claude(system, prompt)
+        raw = await generate_ai_text(system, prompt, json_response=True)
         data = parse_json(raw)
         recs = data.get("recommendations", [])
     except Exception as e:
@@ -1900,8 +1897,6 @@ async def clear_chat(user: dict = Depends(get_current_user)):
 
 @api.post("/chat")
 async def chat(body: ChatInput, user: dict = Depends(get_current_user)):
-    from emergentintegrations.llm.chat import LlmChat, UserMessage, TextDelta, StreamDone
-
     text = body.message.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
@@ -1922,14 +1917,9 @@ async def chat(body: ChatInput, user: dict = Depends(get_current_user)):
     async def event_generator():
         full_text = ""
         try:
-            llm = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"chat_{user['id']}",
-                          system_message=system).with_model("anthropic", "claude-sonnet-5")
-            async for ev in llm.stream_message(UserMessage(text=prompt)):
-                if isinstance(ev, TextDelta):
-                    full_text += ev.content
-                    yield f"data: {json.dumps({'delta': ev.content})}\n\n"
-                elif isinstance(ev, StreamDone):
-                    break
+            async for chunk in gemini_service.stream_text(system, prompt):
+                full_text += chunk
+                yield f"data: {json.dumps({'delta': chunk})}\n\n"
         except Exception as e:
             logger.error(f"Chat stream failed: {e}")
             if not full_text:

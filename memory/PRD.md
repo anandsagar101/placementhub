@@ -5,13 +5,13 @@ Upgrade the existing MERN placement portal (rebuilt on React + FastAPI + MongoDB
 
 ## User Choices (Enterprise iteration)
 - File storage: Cloudinary (signed uploads)
-- AI model: Claude Sonnet 4.6 (via Emergent Universal LLM key)
+- AI model: Google Gemini (via the official Google Gen AI SDK)
 - Email: skipped for now — in-app Notification Center only
 - RBAC: all admin sub-roles (super_admin, placement_officer, department_coordinator)
 - Priority: Verification/Docs/Storage/Profile → Eligibility/Freeze/Offers → Recruiter approval/Filters/Dashboard/Audit → Notifications/Timeline → AI/RBAC/Policy
 
 ## Architecture
-- Backend: FastAPI (`/app/backend/server.py`), MongoDB (motor), JWT+bcrypt, Cloudinary (signed upload), emergentintegrations (Claude). UUID string ids.
+- Backend: FastAPI (`/app/backend/server.py`), MongoDB (motor), JWT+bcrypt, Cloudinary (signed upload), Google Gemini. UUID string ids.
 - Frontend: React 19 + Tailwind + Shadcn UI, SWR, recharts, framer-motion, sonner.
 
 ## Personas / Roles
@@ -35,13 +35,13 @@ JWT auth, role dashboards, jobs, applications, analytics, profile, timeline, dar
 12. Admin audit logs (timestamp, admin, action, target).
 13. Student placement journey timeline.
 14. RBAC admin sub-roles with permission matrix + staff management (super_admin).
-15. AI profile review + AI company recommendations (Claude Sonnet 4.6).
+15. AI profile review + AI company recommendations (Google Gemini).
 16. Extended admin dashboard (awaiting verification/approval, pending docs, highest/avg package, dept & branch-wise).
 
 Verified: testing agent — backend 50/50 (26 enterprise + 24 legacy), frontend 100% critical flows.
 
 ## Implemented — AI Chat Assistant (2026-08-01)
-- Anthropic **Claude Sonnet 5** chat assistant as a floating widget for ALL roles (student/recruiter/admin), role-aware system context.
+- Google Gemini chat assistant as a floating widget for ALL roles (student/recruiter/admin), role-aware system context.
 - **Streaming** responses (SSE) typed live; **persistent per-user history** (db.chat_messages) with reload + "New chat" clear.
 - Endpoints: POST /api/chat (SSE), GET/DELETE /api/chat/history. Frontend: `components/ChatWidget.js` mounted in DashboardLayout.
 - Verified: testing agent — backend streaming/history/roles pass, frontend 100% across 3 roles (panel opacity fixed).

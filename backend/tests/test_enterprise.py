@@ -422,7 +422,7 @@ class TestAdminStatsExtended:
         assert isinstance(d["branch_wise"], list)
 
 
-# ---------------- AI (Claude live) ----------------
+# ---------------- AI ----------------
 class TestAI:
     def test_ai_review(self, student_tok):
         r = requests.post(f"{API}/student/ai-review", headers=H(student_tok), timeout=60)

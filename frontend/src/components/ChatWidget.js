@@ -118,7 +118,7 @@ export default function ChatWidget() {
               <Sparkles className="h-5 w-5" />
               <div>
                 <p className="font-heading text-sm font-semibold leading-tight">PlacementHub AI</p>
-                <p className="text-[11px] opacity-80">Powered by Claude</p>
+                <p className="text-[11px] opacity-80">Powered by Google Gemini</p>
               </div>
             </div>
             <button onClick={clear} title="New chat" data-testid="chat-clear-btn" className="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-white/15">

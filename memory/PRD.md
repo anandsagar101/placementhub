@@ -46,6 +46,18 @@ Verified: testing agent — backend 50/50 (26 enterprise + 24 legacy), frontend 
 - Endpoints: POST /api/chat (SSE), GET/DELETE /api/chat/history. Frontend: `components/ChatWidget.js` mounted in DashboardLayout.
 - Verified: testing agent — backend streaming/history/roles pass, frontend 100% across 3 roles (panel opacity fixed).
 
+## Implemented — Campus Ops & Security (2026-08-01)
+1. **OTP Password Reset** — /auth/forgot-password → verify-otp → reset-password. OTP hashed, 10-min expiry, max 5 attempts, request rate limiting, previous tokens invalidated, strong-password validation + confirm, security logging. Email abstracted behind `EmailService` (logs now; OTP returned as `dev_otp` until a provider is added). UI: 3-step wizard at /forgot-password + "Forgot password?" link.
+2. **Campus Drive Management** — recruiter create; admin moderate (approve/reject/archive); lifecycle status (upcoming→…→cancelled); student register/withdraw; capacity + deadline + eligibility enforced.
+3. **Interview Scheduling** — modes (Online/Offline/Phone), round types, date/time/venue/link/instructions; student accept / request-reschedule; recruiter reschedule/cancel/complete/no-show; auto notifications.
+4. **Interview Feedback** — communication/technical/problem-solving/confidence/overall ratings + recommendation + pass/fail/hold.
+5. **Drive Pipeline** — registered→eligible→shortlisted→round_1/2→hr→offer→accepted→placed (placed marks student placed + frozen).
+6. **Calendar** — month grid for all roles (interviews, drives, deadlines, events); admin creates placement events.
+7. **Reminders** — /reminders computes upcoming interviews, drive deadlines, offers, pending verification.
+8. **Dashboard widgets** — student (upcoming interviews/drives, pending docs), recruiter (today's interviews, upcoming drives, pending feedback), admin (active drives, pending interviews, today's events).
+
+Verified: testing agent — backend 22/22, frontend 100% functional.
+
 ## Backlog / Next
 - P1: Real email notifications (SendGrid/Resend) for the same events.
 - P2: Split server.py into routers; use aggregation pipelines for admin stats.

@@ -598,6 +598,8 @@ async def set_job_status(job_id: str, body: StatusUpdate, user: dict = Depends(r
         raise HTTPException(status_code=404, detail="Job not found")
     if user["role"] != "admin" and job["company_id"] != user["id"]:
         raise HTTPException(status_code=403, detail="Not your job posting.")
+    if user["role"] == "admin" and user.get("admin_role") not in PERMISSIONS["moderate_jobs"]:
+        raise HTTPException(status_code=403, detail="You cannot moderate jobs.")
     await db.jobs.update_one({"id": job_id}, {"$set": {"status": body.status}})
     if user["role"] == "admin":
         await audit(user, f"job_{body.status}", job.get("company_id"), job.get("title"))

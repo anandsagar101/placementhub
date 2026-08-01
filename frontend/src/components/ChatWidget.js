@@ -60,6 +60,7 @@ export default function ChatWidget() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("ph_token")}` },
         body: JSON.stringify({ message: msg }),
       });
+      if (!res.ok || !res.body) throw new Error(`Request failed (${res.status})`);
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -111,7 +112,7 @@ export default function ChatWidget() {
       </button>
 
       {open && (
-        <div className="fixed bottom-24 right-6 z-50 flex h-[540px] w-[calc(100vw-3rem)] max-w-[400px] flex-col overflow-hidden rounded-2xl border border-border bg-card shadow-2xl animate-fade-up" data-testid="chat-panel">
+        <div className="fixed bottom-24 right-6 z-50 flex h-[540px] w-[calc(100vw-3rem)] max-w-[400px] flex-col overflow-hidden rounded-2xl border border-border bg-white shadow-2xl animate-fade-up dark:bg-slate-900" data-testid="chat-panel">
           <div className="flex items-center justify-between border-b border-border bg-primary px-4 py-3 text-primary-foreground">
             <div className="flex items-center gap-2">
               <Sparkles className="h-5 w-5" />

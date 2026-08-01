@@ -40,6 +40,12 @@ JWT auth, role dashboards, jobs, applications, analytics, profile, timeline, dar
 
 Verified: testing agent — backend 50/50 (26 enterprise + 24 legacy), frontend 100% critical flows.
 
+## Implemented — AI Chat Assistant (2026-08-01)
+- Anthropic **Claude Sonnet 5** chat assistant as a floating widget for ALL roles (student/recruiter/admin), role-aware system context.
+- **Streaming** responses (SSE) typed live; **persistent per-user history** (db.chat_messages) with reload + "New chat" clear.
+- Endpoints: POST /api/chat (SSE), GET/DELETE /api/chat/history. Frontend: `components/ChatWidget.js` mounted in DashboardLayout.
+- Verified: testing agent — backend streaming/history/roles pass, frontend 100% across 3 roles (panel opacity fixed).
+
 ## Backlog / Next
 - P1: Real email notifications (SendGrid/Resend) for the same events.
 - P2: Split server.py into routers; use aggregation pipelines for admin stats.

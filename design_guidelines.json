@@ -1,0 +1,121 @@
+{
+  "theme_and_concept": {
+    "archetype": "SWISS & HIGH-CONTRAST (Authority, Clarity, Truth)",
+    "description": "A highly professional, industry-level SaaS placement portal. Focuses on clarity, progressive disclosure for complex data, and a clean, trustworthy aesthetic. Uses a modular grid system (Bento Grids) with left-sidebar navigation.",
+    "theme_mode": "system_with_toggle"
+  },
+  "typography": {
+    "primary_font_heading": "Outfit",
+    "primary_font_body": "IBM Plex Sans",
+    "font_weights": {
+      "headings": "600 (Semibold) to 800 (ExtraBold)",
+      "body": "400 (Regular) to 500 (Medium)"
+    },
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tighter leading-none",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight leading-tight",
+      "h3": "text-xl sm:text-2xl tracking-tight",
+      "h4": "text-lg sm:text-xl font-medium",
+      "body": "text-base leading-relaxed",
+      "small": "text-sm text-muted-foreground",
+      "overline": "text-xs font-semibold tracking-[0.2em] uppercase"
+    }
+  },
+  "colors": {
+    "light_mode": {
+      "background": "#F8FAFC",
+      "surface": "#FFFFFF",
+      "primary": "#2563EB",
+      "primary_hover": "#1D4ED8",
+      "secondary": "#64748B",
+      "text_primary": "#0F172A",
+      "text_secondary": "#475569",
+      "border": "#E2E8F0",
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "danger": "#EF4444"
+    },
+    "dark_mode": {
+      "background": "#020617",
+      "surface": "#0F172A",
+      "primary": "#3B82F6",
+      "primary_hover": "#60A5FA",
+      "secondary": "#94A3B8",
+      "text_primary": "#F8FAFC",
+      "text_secondary": "#94A3B8",
+      "border": "#1E293B",
+      "success": "#34D399",
+      "warning": "#FBBF24",
+      "danger": "#F87171"
+    }
+  },
+  "visual_enhancers": {
+    "surfaces": "Grid Borders (The Technical Look) for dashboard. Expose the skeleton with subtle borders. 1px solid borders for cards, no drop shadows to maintain a clean SaaS look.",
+    "hover_states": "Slight lift (-translate-y-1), subtle border color darken/lighten, explicit text color changes.",
+    "glassmorphism": "Used only for sticky headers. Light mode: bg-white/70 backdrop-blur-xl border-b border-slate-200/50. Dark mode: bg-slate-950/60 backdrop-blur-xl border-b border-slate-800/50. CRITICAL: DO NOT use complete transparent background in header, overlays, any surface that has content under it."
+  },
+  "grids_and_layouts": {
+    "dashboard_layout": "Left-sidebar + modular content area. Modified F-pattern reading flow. Sidebar should be collapsible.",
+    "bento_grid": "MODE B: High Density Grid (grid-cols-1 md:grid-cols-3 lg:grid-cols-4). Tight gaps (gap-4 or gap-6). Summary widgets span 1 col. Main charts span 2-3 cols.",
+    "spacing_scale": "p-1, p-2, p-4, p-6, p-8, p-12. Containers with borders MUST have internal padding (p-6 or p-8)."
+  },
+  "components": {
+    "buttons": "Pill-shaped or slightly rounded (rounded-md) with sharp interaction animations. Active state: scale-95.",
+    "cards": "Flat, rectangular, 1px border. No shadows. Internal padding p-6. Use Shadcn Card heavily customized.",
+    "tables": "Shadcn Table. Dense, left-aligned data. Use badges for status (Applied, Shortlisted, Selected).",
+    "charts": "Shadcn Charts (Recharts). Line charts for placement trends, Bar charts for company hiring comparisons. Avoid pie charts unless strict binary data.",
+    "forms": "Shadcn Form, Input, Select. Progressive disclosure for complex student profiles."
+  },
+  "motion_and_interactions": {
+    "hover": "Transition transform 0.2s ease, opacity 0.2s ease. Explicitly change text color on hover.",
+    "entrance": "Staggered fade-up for list items (jobs, drives).",
+    "micro_interactions": "Smooth state changes for application status timeline."
+  },
+  "accessibility": {
+    "contrast": "Ensure 4.5:1 for body text. Use APCA guidelines.",
+    "testing_attributes": "All interactive and key informational elements MUST include a `data-testid` attribute (e.g., `data-testid=\"apply-job-button\"`).",
+    "motion": "Respect prefers-reduced-motion."
+  },
+  "media_and_assets": {
+    "icons": "lucide-react for standard icons.",
+    "image_urls": [
+      {
+        "url": "https://images.unsplash.com/photo-1522071820081-009f0129c71c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBvZmZpY2UlMjB0ZWNoJTIwcmVjcnVpdG1lbnR8ZW58MHx8fHwxNzg1NTU0NzM2fDA&ixlib=rb-4.1.0&q=85",
+        "category": "Hero Background / Landing Page",
+        "description": "Group of tech professionals and students collaborating. Use for main landing page hero section."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1640163561331-1b68a6474957?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1Mjh8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBjb2xsZWdlJTIwc3R1ZGVudCUyMHRlY2h8ZW58MHx8fHwxNzg1NTU0NzM3fDA&ixlib=rb-4.1.0&q=85",
+        "category": "Student Persona Section",
+        "description": "Woman student at a monitor. Use for the 'For Students' feature block."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1556761175-4b46a572b786?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjBvZmZpY2UlMjB0ZWNoJTIwcmVjcnVpdG1lbnR8ZW58MHx8fHwxNzg1NTU0NzM2fDA&ixlib=rb-4.1.0&q=85",
+        "category": "Recruiter Persona Section",
+        "description": "Professional man in an office environment. Use for the 'For Recruiters' feature block."
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "NOTE: You have .js files not .tsx files. You MUST adapt all Shadcn UI components and snippets to standard JavaScript (.jsx) rather than TypeScript. Remove all type annotations.",
+    "Install required dependencies: `yarn add lucide-react react-router-dom recharts framer-motion sonner clsx tailwind-merge`.",
+    "Install Shadcn UI components and configure them for JS usage (or manually copy and convert to .jsx).",
+    "Configure Tailwind with the specified color palette and font families (Outfit for headings, IBM Plex Sans for body).",
+    "Implement role-based routing (Student, Recruiter, Admin) with distinct dashboard layouts.",
+    "Do NOT use HTML `<select>` or `<input type=\"date\">`. Use customized Shadcn equivalents.",
+    "Ensure the Dashboard uses a collapsible left sidebar pattern with a main content area.",
+    "For the Analytics pages, utilize Recharts to show placement stats, keeping to 3-5 core KPIs per view.",
+    "Implement light/dark mode toggle using a standard theme provider.",
+    "Ensure all interactive elements have `data-testid` attributes."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "Do not converge toward generic outputs. Use the specified font pairings and color archetypes.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects carefully on sticky headers only. No completely transparent backgrounds.",
+    "Do NOT apply `transition: all`. Use specific properties like `transition-transform` or `transition-colors`.",
+    "Do NOT center align the app container. Text should be left-aligned for readability.",
+    "Use modern button styles. Pills or sharp elements.",
+    "Never use placeholder text or generic AI emojis for icons. Use Lucide icons.",
+    "Every interaction needs micro-animations (hover states, focus rings)."
+  ]
+}

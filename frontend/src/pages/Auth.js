@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { GraduationCap, Building2, Loader2, ArrowLeft } from "lucide-react";
+import { GraduationCap, Building2, Loader2, ArrowLeft, Eye, EyeOff, } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,6 +20,7 @@ export default function Auth({ mode = "login" }) {
   const [form, setForm] = useState({ name: "", email: "", password: "", company_name: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -125,7 +126,11 @@ export default function Auth({ mode = "login" }) {
 
             <div>
               <Label htmlFor="password" className="mb-2 block text-sm font-medium">Password</Label>
-              <Input id="password" type="password" data-testid="auth-password-input" value={form.password} onChange={set("password")} required placeholder="••••••••" />
+            <div className="relative">
+               <Input id="password" type={showPassword ? "text" : "password"} data-testid="auth-password-input" value={form.password}  onChange={set("password")}  required  placeholder="" className="pr-10" />
+               <button type="button" onClick={() => setShowPassword(!showPassword)} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" > {showPassword ? ( <EyeOff className="h-4 w-4" /> ) : ( <Eye className="h-4 w-4" /> )}
+               </button>
+            </div>
               {isLogin && (
                 <div className="mt-2 text-right">
                   <Link to="/forgot-password" className="text-sm font-medium text-primary hover:underline" data-testid="forgot-password-link">Forgot password?</Link>

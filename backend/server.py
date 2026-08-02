@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 from pathlib import Path
 import os
+import traceback
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1201,6 +1202,7 @@ async def ai_review(user: dict = Depends(require_roles("student"))):
         data = parse_json(raw)
     except Exception as e:
         logger.error(f"AI review failed: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=502, detail="AI review is temporarily unavailable. Please try again.")
     data["generated_at"] = now_iso()
     await db.users.update_one({"id": user["id"]}, {"$set": {"profile_score": data}})
@@ -1922,6 +1924,7 @@ async def chat(body: ChatInput, user: dict = Depends(get_current_user)):
                 yield f"data: {json.dumps({'delta': chunk})}\n\n"
         except Exception as e:
             logger.error(f"Chat stream failed: {e}")
+            traceback.print_exc()
             if not full_text:
                 full_text = "Sorry, I'm having trouble responding right now. Please try again in a moment."
                 yield f"data: {json.dumps({'delta': full_text})}\n\n"

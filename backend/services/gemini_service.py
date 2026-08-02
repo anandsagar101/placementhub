@@ -20,7 +20,7 @@ class GeminiService:
     ``GEMINI_API_KEY`` without restarting the application.
     """
 
-    model = "gemini-2.5-flash"
+    model = "gemini-3.5-flash"
 
     def __init__(self, client_factory: Callable[..., Any] = genai.Client, timeout_seconds: float = 45):
         self._client_factory = client_factory
@@ -66,35 +66,45 @@ class GeminiService:
 
     async def generate_text(self, system_instruction: str, prompt: str, *, json_response: bool = False) -> str:
         client = self._create_client()
-        async_client = client.aio
+
+        def _run():
+            response = client.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=self._config(system_instruction, json_response),
+            )
+            return self._response_text(response)
+
         try:
             async with asyncio.timeout(self._timeout_seconds):
-                response = await async_client.models.generate_content(
-                    model=self.model,
-                    contents=prompt,
-                    config=self._config(system_instruction, json_response),
-                )
-            return self._response_text(response)
+                return await asyncio.to_thread(_run)
         except Exception as exc:
             raise self._service_error(exc) from exc
-        finally:
-            await async_client.aclose()
 
     async def stream_text(self, system_instruction: str, prompt: str) -> AsyncIterator[str]:
         client = self._create_client()
-        async_client = client.aio
+
+        def _collect():
+            parts = []
+            stream = client.models.generate_content_stream(
+                model=self.model,
+                contents=prompt,
+                config=self._config(system_instruction, False),
+            )
+
+            for chunk in stream:
+                text = getattr(chunk, "text", None)
+                if isinstance(text, str) and text:
+                    parts.append(text)
+
+            return parts
+
         try:
             async with asyncio.timeout(self._timeout_seconds):
-                stream = await async_client.models.generate_content_stream(
-                    model=self.model,
-                    contents=prompt,
-                    config=self._config(system_instruction, json_response=False),
-                )
-                async for chunk in stream:
-                    text = getattr(chunk, "text", None)
-                    if isinstance(text, str) and text:
-                        yield text
+                chunks = await asyncio.to_thread(_collect)
+
+            for chunk in chunks:
+                yield chunk
+
         except Exception as exc:
             raise self._service_error(exc) from exc
-        finally:
-            await async_client.aclose()

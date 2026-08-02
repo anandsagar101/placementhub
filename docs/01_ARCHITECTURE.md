@@ -101,6 +101,26 @@ The architecture has been designed to satisfy the following engineering goals:
 
 ---
 
+# Architectural Style
+
+PlacementHub follows a layered monolithic architecture with clear separation of presentation, business, persistence, and external integration layers.
+
+The current implementation is deployed as a single backend application while maintaining logical modularity across business domains.
+
+The architecture follows the following principles:
+
+- Layered Architecture
+- API-First Design
+- Stateless Backend Services
+- Modular Business Domains
+- Separation of Concerns
+- Cloud-Native Deployment
+- Independent Frontend and Backend Deployments
+
+The architecture intentionally favors maintainability and simplicity over premature service decomposition while preserving a clear migration path toward a service-oriented architecture if future requirements demand it.
+
+---
+
 # System Context
 
 ```mermaid
@@ -137,53 +157,79 @@ Backend --> Gemini
 
 # High-Level Architecture
 
+PlacementHub is organized as a set of logical containers that collaborate through clearly defined interfaces.
+
+The React frontend serves as the presentation layer and communicates exclusively with the FastAPI backend through REST APIs. The backend contains multiple logical service domains responsible for authentication, placement operations, administration, AI capabilities, and notification management.
+
+MongoDB Atlas serves as the primary operational datastore, while Cloudinary and Google Gemini are integrated as external platform services through dedicated backend integration layers.
+
 ```mermaid
 flowchart TB
 
-subgraph Client
-Browser
+User["Users<br/>(Students • Recruiters • Placement Admins)"]
+
+subgraph Client["Client Layer"]
+    React["React SPA"]
 end
 
-subgraph Frontend
-React
-Pages
-Components
+subgraph Backend["FastAPI Backend"]
+    API["REST API Layer"]
+
+    subgraph Services["Application Services"]
+        Auth["Authentication & Authorization"]
+        Placement["Placement Services"]
+        Admin["Administration Services"]
+        AI["AI Services"]
+        Notify["Notification Services"]
+    end
 end
 
-subgraph Backend
-Authentication
-BusinessLogic
-API
-AI
+subgraph Data["Data Layer"]
+    Mongo["MongoDB Atlas"]
 end
 
-subgraph Database
-MongoDB
+subgraph External["External Services"]
+    Cloudinary["Cloudinary"]
+    Gemini["Google Gemini"]
 end
 
-subgraph External
-Cloudinary
-Gemini
-end
-
-Browser --> React
+User --> React
 
 React --> API
 
-API --> Authentication
+API --> Auth
+API --> Placement
+API --> Admin
+API --> AI
+API --> Notify
 
-API --> BusinessLogic
+Auth --> Mongo
+Placement --> Mongo
+Admin --> Mongo
+Notify --> Mongo
 
-BusinessLogic --> MongoDB
-
-BusinessLogic --> Cloudinary
-
+Placement --> Cloudinary
 AI --> Gemini
-
-BusinessLogic --> AI
 ```
 
 ---
+
+# Container Responsibilities
+
+Each architectural container has a clearly defined responsibility.
+
+| Container | Primary Responsibility |
+|------------|------------------------|
+| React SPA | User interface, routing, client-side state management, API communication |
+| REST API Layer | HTTP request handling, request validation, response generation |
+| Authentication & Authorization | Identity verification, JWT processing, Role-Based Access Control |
+| Placement Services | Business workflows including jobs, applications, drives, interviews, offers, and profile management |
+| Administration Services | Verification workflows, recruiter approval, audit logging, platform governance |
+| AI Services | AI profile review, company recommendations, conversational assistant |
+| Notification Services | In-app notification generation and delivery |
+| MongoDB Atlas | Persistent business data storage |
+| Cloudinary | Secure document storage and media delivery |
+| Google Gemini | AI inference and natural language generation |
 
 # Frontend Architecture
 
@@ -331,42 +377,67 @@ Backend-->>Frontend: JWT
 
 Frontend-->>User: Authenticated Session
 ```
+
+---
+
+# API Architecture
+
+PlacementHub exposes a RESTful API implemented using FastAPI.
+
+All business functionality is accessed through authenticated HTTP endpoints organized around business domains rather than technical components.
+
+Major API domains include:
+
+- Authentication
+- Profile Management
+- Document Management
+- Job Management
+- Applications
+- Campus Drives
+- Interviews
+- Offers
+- Notifications
+- Administration
+- AI Services
+- Calendar & Events
+
+Detailed endpoint specifications are maintained separately within the API Reference document.
+
 ---
 
 # Deployment Architecture
 
-PlacementHub is deployed using independently managed frontend and backend services with managed cloud infrastructure.
+PlacementHub follows a distributed cloud deployment model in which the frontend, backend, database, and external services are independently managed.
 
-## Deployment Diagram
+The frontend is deployed on Vercel, while the backend is hosted on Render. Business data is stored in MongoDB Atlas, and specialized cloud services provide secure media storage and AI capabilities.
 
 ```mermaid
-flowchart LR
+flowchart TB
 
 User["User Browser"]
 
-subgraph Frontend
-Vercel["Vercel
-React Frontend"]
+Internet["HTTPS"]
+
+subgraph Frontend["Frontend Layer"]
+    Vercel["Vercel<br/>React SPA"]
 end
 
-subgraph Backend
-Render["Render
-FastAPI Backend"]
+subgraph Backend["Application Layer"]
+    Render["Render<br/>FastAPI Backend"]
 end
 
-subgraph Database
-Mongo["MongoDB Atlas"]
+subgraph Data["Data Layer"]
+    Mongo["MongoDB Atlas"]
 end
 
-subgraph Storage
-Cloudinary["Cloudinary"]
+subgraph Services["Managed Services"]
+    Cloudinary["Cloudinary"]
+    Gemini["Google Gemini"]
 end
 
-subgraph AI
-Gemini["Google Gemini"]
-end
+User --> Internet
 
-User --> Vercel
+Internet --> Vercel
 
 Vercel --> Render
 
@@ -378,6 +449,20 @@ Render --> Gemini
 ```
 
 ---
+
+# Infrastructure Boundaries
+
+The PlacementHub deployment separates responsibilities across multiple infrastructure boundaries.
+
+| Layer | Responsibility |
+|---------|----------------|
+| Client | Browser-based user interaction |
+| Frontend | Presentation layer and API communication |
+| Backend | Business logic, authentication, authorization, workflow execution |
+| Database | Persistent operational data |
+| External Services | AI inference and document storage |
+
+This separation improves maintainability, security, deployment flexibility, and future scalability while keeping each infrastructure component independently manageable.
 
 # Request Lifecycle
 
@@ -411,6 +496,48 @@ React-->>User: Updated Interface
 
 ---
 
+# Data Flow Overview
+
+Every business operation within PlacementHub follows a predictable architectural data flow.
+
+```mermaid
+flowchart LR
+
+User
+
+React
+
+FastAPI
+
+Business["Business Services"]
+
+Mongo
+
+Response
+
+User --> React
+
+React --> FastAPI
+
+FastAPI --> Business
+
+Business --> Mongo
+
+Mongo --> Business
+
+Business --> FastAPI
+
+FastAPI --> React
+
+React --> Response
+```
+
+The frontend never communicates directly with MongoDB or external cloud services.
+
+All business processing occurs within the backend before responses are returned to the client.
+
+---
+
 # AI Request Flow
 
 AI capabilities are implemented as an independent service layer.
@@ -441,6 +568,50 @@ React-->>User: Display Result
 
 ---
 
+# Security Boundaries
+
+PlacementHub enforces security at multiple architectural boundaries.
+
+```mermaid
+flowchart LR
+
+User
+
+Browser["Browser"]
+
+React["React SPA"]
+
+FastAPI["FastAPI Backend"]
+
+Mongo["MongoDB Atlas"]
+
+Cloudinary["Cloudinary"]
+
+Gemini["Google Gemini"]
+
+User --> Browser
+
+Browser --> React
+
+React -->|"HTTPS"| FastAPI
+
+FastAPI -->|"Authenticated Requests"| Mongo
+
+FastAPI -->|"Signed Uploads"| Cloudinary
+
+FastAPI -->|"AI Requests"| Gemini
+```
+
+Security responsibilities are enforced at each boundary.
+
+- HTTPS protects client-server communication.
+- Authentication is validated by the backend.
+- Authorization is enforced before business logic execution.
+- Database access is never exposed directly to clients.
+- External services are accessed only through backend integrations.
+
+---
+
 # Security Architecture
 
 PlacementHub applies security controls across every architectural layer.
@@ -459,6 +630,27 @@ Primary security controls include:
 
 Security is enforced within the backend and is never delegated solely to the frontend.
 
+
+---
+
+# Cross-Cutting Concerns
+
+Several architectural concerns span every business module within PlacementHub.
+
+These concerns include:
+
+- Authentication
+- Authorization
+- Logging
+- Auditability
+- Input Validation
+- Error Handling
+- Notification Generation
+- AI Integration
+- Configuration Management
+
+These services operate consistently across all functional modules without becoming tightly coupled to any single business domain.
+
 ---
 
 # Scalability Considerations
@@ -473,6 +665,39 @@ The current architecture supports future growth through:
 - Future service decomposition
 - AI service isolation
 - Horizontal scaling opportunities
+
+---
+
+# Architectural Constraints
+
+The current implementation intentionally adopts several architectural constraints.
+
+- Single FastAPI application deployment.
+- Shared MongoDB database.
+- REST-based communication.
+- No background worker infrastructure.
+- No distributed caching layer.
+- No event broker.
+- AI services remain optional enhancements rather than mandatory runtime dependencies.
+
+These constraints simplify development while preserving a migration path toward a more distributed architecture if future requirements justify additional complexity.
+
+---
+
+# Technology Stack Mapping
+
+| Layer | Technology |
+|--------|------------|
+| Frontend | React 19 |
+| UI Components | Tailwind CSS + Shadcn UI |
+| Backend | FastAPI |
+| Runtime | Python 3.11 |
+| Database | MongoDB Atlas |
+| Authentication | JWT |
+| Storage | Cloudinary |
+| AI | Google Gemini |
+| Frontend Hosting | Vercel |
+| Backend Hosting | Render |
 
 ---
 
@@ -491,6 +716,20 @@ The following major architectural decisions define the current implementation.
 | Google Gemini | AI-powered assistance |
 | Vercel + Render | Independent frontend/backend deployment |
 
+
+---
+
+# Related Documentation
+
+This Architecture document should be read together with the following engineering documents.
+
+| Document | Purpose |
+|----------|---------|
+| 00_PROJECT_DNA.md | Engineering vision and principles |
+| 02_SYSTEM_DESIGN.md | Runtime behavior and business workflows |
+| 03_DATABASE_SCHEMA.md | Database collections and schemas |
+| 04_API_REFERENCE.md | REST API specification |
+
 ---
 
 # Future Evolution
@@ -507,3 +746,28 @@ Planned architectural improvements include:
 - Redis caching
 - Background task processing
 - Service-oriented architecture where beneficial
+
+---
+
+# Revision History
+
+| Version | Date | Description |
+|----------|------|-------------|
+| 2.1.0 | 2026-08-03 | Enterprise architecture documentation completed. |
+
+---
+
+# Architecture Validation Checklist
+
+The current architecture satisfies the following architectural objectives.
+
+- Layered architecture
+- API-first communication
+- Stateless backend
+- Modular business domains
+- Independent deployment
+- Role-Based Access Control
+- Secure document management
+- AI service isolation
+- Cloud-native infrastructure
+- Horizontal scalability readiness

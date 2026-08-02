@@ -6,11 +6,32 @@
 ![Python](https://img.shields.io/badge/Python-3.11-blue)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green)
 ![React](https://img.shields.io/badge/React-19-61DAFB)
-![MongoDB](https://img.shields.io/badge/MongoDB-Async-success)
+![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-success)
 ![Google Gemini](https://img.shields.io/badge/AI-Google%20Gemini-orange)
 ![Cloudinary](https://img.shields.io/badge/Storage-Cloudinary-blue)
-![Render](https://img.shields.io/badge/Deployment-Render-purple)
+![Vercel](https://img.shields.io/badge/Frontend-Vercel-black)
+![Render](https://img.shields.io/badge/Backend-Render-purple)
 
+## Live Demo
+
+🌐 **Live Demo:** https://placementhub-steel.vercel.app/
+
+The application is publicly accessible for demonstration, evaluation, and testing purposes.
+
+> **Deployment Status:** Live Demo Environment  
+> **Frontend:** Vercel  
+> **Backend:** Render  
+> **Database:** MongoDB Atlas
+
+## Demo Access
+
+| Role | Email | Password |
+|------|-------|----------|
+| Student | anand@gmail.com | Anand@123 |
+| Recruiter | zs@gmail.com | Zs@123 |
+| Admin | princegupta@gmail.com | Prince@123 |
+
+Super Admin's credentials are not public.
 
 ---
 
@@ -201,8 +222,10 @@ Project documentation is maintained inside the `/docs` directory.
 
 The documentation suite includes:
 
+- Project DNA
 - Project Architecture
 - System Design
+- Database Schema
 - API Reference
 - Database Schema
 - Deployment Guide
@@ -210,3 +233,27 @@ The documentation suite includes:
 - Testing Guide
 - Contribution Guide
 - Roadmap
+
+## Roadmap
+
+The project is under active development. Planned improvements include:
+
+- Production email notification service
+- Modular backend architecture (router separation)
+- Advanced analytics and reporting
+- Performance optimization
+- CI/CD pipeline
+- Docker support
+- Comprehensive automated testing
+- Extended API documentation
+- Public deployment
+
+## Contributing
+
+Contributions, suggestions, and issue reports are welcome.
+
+As the project is currently under active development, contribution guidelines will be published in a dedicated `CONTRIBUTING.md` document.
+
+## License
+
+A license has not been specified yet for this project.

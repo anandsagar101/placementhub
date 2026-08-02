@@ -152,14 +152,6 @@ export default function Auth({ mode = "login" }) {
             </Link>
           </p>
 
-          {isLogin && (
-            <div className="mt-6 rounded-lg border border-border bg-muted/40 p-4 text-xs text-muted-foreground">
-              <p className="font-semibold text-foreground">Demo logins</p>
-              <p className="mt-1">Admin: admin@placementhub.com / Admin@123</p>
-              <p>Recruiter: hr@nimbuscloud.com / Company@123</p>
-              <p>Student: aarav@student.com / Student@123</p>
-            </div>
-          )}
         </motion.div>
       </div>
     </div>

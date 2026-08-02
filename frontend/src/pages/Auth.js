@@ -7,8 +7,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/context/AuthContext";
 import { cn } from "@/lib/utils";
+import HeroImage from "@/assets/images/kiet-campus.jpg";
 
-const HERO = "https://images.unsplash.com/photo-1522071820081-009f0129c71c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MjJ8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBvZmZpY2UlMjB0ZWNoJTIwcmVjcnVpdG1lbnR8ZW58MHx8fHwxNzg1NTU0NzM2fDA&ixlib=rb-4.1.0&q=85";
+const HERO = HeroImage;
 
 export default function Auth({ mode = "login" }) {
   const navigate = useNavigate();
